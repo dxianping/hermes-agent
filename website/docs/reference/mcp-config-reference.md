@@ -178,13 +178,18 @@ as ambiguous and asks per call rather than using the union of their manifests
 as authority. Managed cache, active-origin, lock, and provenance files are
 host-owned state and cannot be written through native file tools.
 
-Managed remote-skill state and materialization currently require POSIX
-directory-descriptor and no-follow filesystem semantics. On native Windows or
-another runtime that cannot provide those primitives, Hermes fails closed
-before creating or reading managed remote-skill files; Skills over MCP cannot
-be activated or materialized there. Ordinary sessions with Skills over MCP
-disabled, including compression continuations with no remote-skill state,
-remain available.
+Managed remote-skill state and materialization are anchored to the managed root
+on every supported platform. POSIX walks each component through
+directory-descriptor `openat` calls with `O_NOFOLLOW`/`O_DIRECTORY`, so the check
+and the use are one operation and a component swapped mid-walk cannot redirect
+it. Windows has no `dir_fd` equivalent: the walk validates every component and
+rejects any reparse point (symlink, junction, mount point), and leaf files are
+opened through `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT` so the handle
+always names the object itself rather than what it points at. Because that check
+and use are separate steps, a component replaced between them is a residual race
+that requires local write access inside the host-owned managed tree below
+`HERMES_HOME`. A runtime providing neither primitive set fails closed before
+creating or reading managed remote-skill files.
 
 ## Environment variable references
 
