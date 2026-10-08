@@ -8,7 +8,7 @@ import hashlib
 import importlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import sys
 import tempfile
@@ -231,7 +231,9 @@ def main() -> int:
         check(guide.get("success") is True, f"supporting text read failed: {guide}")
         check("cobalt-lantern-27" in guide.get("content", ""), "supporting text was incorrect")
 
-        binary_destination = Path("materialized/pixel.png")
+        # A qualified MCP destination is a normalized POSIX-relative path on every
+        # host; ``str(Path(...))`` would hand this a backslash on Windows.
+        binary_destination = PurePosixPath("materialized/pixel.png")
         binary = load_json(
             skills_tool.skill_view(
                 primary_name,
@@ -239,7 +241,7 @@ def main() -> int:
                 task_id=session_a,
                 session_id=session_a,
                 materialize=True,
-                destination=str(binary_destination),
+                destination=binary_destination.as_posix(),
             ),
             "binary skill_view",
         )

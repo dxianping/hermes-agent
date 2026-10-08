@@ -17,4 +17,14 @@ This fixture is an independent Python MCP SDK server. It exposes only synthetic,
 
 The runner checks Hermes host behavior for metadata-only startup, prompt provenance, local/remote and intra-server name collisions, lazy supporting-file reads, and binary materialization. Each remote skill is activated in a separate session so approval state cannot be borrowed across origins or skill identities.
 
-This is not a complete SEP conformance suite. It does not claim coverage of dynamic manifests, unenumerated skills, nested-skill activation, content changes and approval revocation, hostile input scanning, cross-server resource consent, HTTP authentication, newer list-cache attributes, Windows filesystem behavior, or maximum-size limits. The fixture does not patch host scanning or consent code and does not grant execution permission.
+This is not a complete SEP conformance suite. It does not claim coverage of dynamic manifests, unenumerated skills, nested-skill activation, content changes and approval revocation, hostile input scanning, cross-server resource consent, HTTP authentication, newer list-cache attributes, or maximum-size limits. The fixture does not patch host scanning or consent code and does not grant execution permission.
+
+## Host platforms
+
+The runner is host-portable: ``tests/tools/test_mcp_skills_interop.py`` exposes a
+native ``linux``, ``macos`` and ``windows`` test, and the opposite-host tests skip
+honestly. The managed remote-skill tree is anchored differently per platform
+(directory descriptors on POSIX, reparse-point rejection plus
+``FILE_FLAG_OPEN_REPARSE_POINT`` handles on Windows), so a host that cannot
+provide either primitive set fails the materialization check instead of silently
+writing somewhere else.

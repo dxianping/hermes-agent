@@ -50,3 +50,9 @@ def test_independent_stdio_skills_fixture_linux(tmp_path, legacy):
 @pytest.mark.parametrize("legacy", [False, True], ids=["modern", "legacy"])
 def test_independent_stdio_skills_fixture_macos(tmp_path, legacy):
     _run_independent_stdio_fixture(tmp_path, legacy)
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("legacy", [False, True], ids=["modern", "legacy"])
+def test_independent_stdio_skills_fixture_windows(tmp_path, legacy):
+    _run_independent_stdio_fixture(tmp_path, legacy)

@@ -14,6 +14,6 @@ The candidate must implement the SEP-2640 host integration and Skills Guard expo
 
 The binary control is an actual 1×1 PNG. It must remain labeled `not_scanned_binary`; its successful materialization is not a content-safety verdict. Arbitrary `.bin` files remain subject to the existing Skills Guard structural policy.
 
-`tests/tools/test_mcp_skills_interop.py` exposes separate native `linux_only` and `macos_only` tests for the repository's CI discovery. The opposite-host test is skipped honestly. `shutdown_returned` records only that the bounded host shutdown API returned without exception, not an independent assertion that every child process was reaped.
+`tests/tools/test_mcp_skills_interop.py` exposes separate native `linux`, `macos` and `windows` tests for the repository's CI discovery. The opposite-host tests skip honestly. `shutdown_returned` records only that the bounded host shutdown API returned without exception, not an independent assertion that every child process was reaped.
 
 See `HOST_CONSTRAINTS.md` for the exact covered and uncovered modes.
