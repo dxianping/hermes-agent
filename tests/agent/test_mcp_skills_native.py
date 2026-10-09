@@ -455,3 +455,29 @@ def test_runtime_dispatchers_deny_effects_after_real_compression_publish_and_ado
         delegate_agent, "delegate_task", {"action": "spawn", "goal": "no"}, child))
     assert "BLOCKED" in result["error"]
     assert delegated == []
+
+
+def test_empty_prompt_pin_retries_when_catalog_publishes_late(tmp_path, monkeypatch):
+    """An empty prompt pin must pick up a catalog that arrives after the first build."""
+    home = tmp_path / "home"
+    local = home / "skills" / "general" / "local-demo"
+    local.mkdir(parents=True)
+    (local / "SKILL.md").write_text("---\nname: local-demo\ndescription: Local demo\n---\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from agent import system_prompt
+    from tools import mcp_skills_registry as registry
+
+    registry.clear_runtime_state()
+    registry.publish_live_catalog(home, "fixture", "config-a", [])
+    agent = SimpleNamespace(
+        valid_tool_names=["skill_view", "skills_list"], platform="cli",
+        session_id="late-prompt", _hermes_home=home,
+    )
+    assert "mcp:fixture:" not in system_prompt._skills_prompt(agent)
+    assert agent._mcp_skill_snapshot == ()
+
+    entry = _remote_entry(b"---\nname: remote-demo\ndescription: Remote startup description\n---\n")
+    registry.publish_live_catalog(home, "fixture", "config-a", [entry])
+    prompt = system_prompt._skills_prompt(agent)
+    assert f"mcp:fixture:{entry.uri}" in prompt
+    registry.clear_runtime_state()

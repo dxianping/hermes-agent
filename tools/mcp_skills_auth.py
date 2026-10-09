@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ def authorization_context(server: str, home: Path | str | None = None, *,
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", server) is None:
         raise ValueError("MCP skill authorization context has an invalid server label")
     root = validate_managed_root(Path(home or get_hermes_home()).expanduser()).absolute()
-    state: dict[str, Any] = {"profile": str(root), "server": server}
+    state: dict[str, Any] = {"profile": os.path.normcase(str(root)), "server": server}
     for suffix in (".json", ".client.json", ".meta.json"):
         try:
             payload = secure_read_json(root, Path("mcp-tokens") / f"{_safe_filename(server)}{suffix}")
@@ -55,9 +56,11 @@ def authorization_context(server: str, home: Path | str | None = None, *,
         issuer = getattr(getattr(context, "storage", None), "loaded_issuer", None)
         if issuer is not None and adopted[".json"] is not None:
             adopted[".json"]["hermes_issuer"] = issuer
+        provider_home = os.path.normcase(
+            str(Path(getattr(oauth_provider, "_hermes_home", "") or ".").absolute()))
         if (not state[".json"] or not adopted[".json"]
                 or any(state[key] != value for key, value in adopted.items())
-                or Path(getattr(oauth_provider, "_hermes_home", "") or ".").absolute() != root):
+                or provider_home != os.path.normcase(str(root))):
             raise RuntimeError("MCP skill authorization context is not adopted by the connected OAuth source; reconnect")
     raw = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()

@@ -264,3 +264,44 @@ def test_reconnect_skills_list_failure_revokes_prior_generation(tmp_path, monkey
     with pytest.raises(RuntimeError, match="extension-ready"):
         cache._capture_source("fixture", server, tmp_path)
     clear_runtime_state()
+
+
+def test_empty_pin_self_heals_when_catalog_publishes_late(tmp_path, monkeypatch):
+    """A session pinned before the MCP catalog arrives must not stay empty (SEP-2640)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_skills_registry import (
+        _snapshot_rel, clear_runtime_state, pin_session, publish_live_catalog,
+    )
+
+    clear_runtime_state()
+    # First pin races the background catalog publish: nothing has arrived yet.
+    assert pin_session(tmp_path, "late-catalog") == ()
+    # No zero-row snapshot is persisted, so the session is not poisoned.
+    assert not (tmp_path / _snapshot_rel("late-catalog")).exists()
+    # The catalog arrives late; the same session must now see it.
+    publish_live_catalog(tmp_path, "fixture", "config-a", [_entry()])
+    rows = pin_session(tmp_path, "late-catalog")
+    assert [row["uri"] for row in rows] == ["skill://fixture/remote-demo/SKILL.md"]
+    assert (tmp_path / _snapshot_rel("late-catalog")).exists()
+    clear_runtime_state()
+
+
+def test_legacy_empty_snapshot_is_reseeded_from_live_catalog(tmp_path, monkeypatch):
+    """An already-persisted zero-row seed from an older build must recover, not poison."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import json
+
+    from tools.mcp_skills_registry import (
+        _profile_key, _snapshot_rel, clear_runtime_state, pin_session, publish_live_catalog,
+    )
+
+    clear_runtime_state()
+    publish_live_catalog(tmp_path, "fixture", "config-a", [_entry()])
+    target = tmp_path / _snapshot_rel("legacy")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({
+        "schema_version": 2, "profile_key": _profile_key(tmp_path),
+        "session_id_hash": "legacy", "entries": [],
+    }))
+    assert len(pin_session(tmp_path, "legacy")) == 1
+    clear_runtime_state()

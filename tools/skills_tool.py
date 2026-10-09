@@ -265,7 +265,9 @@ def skills_list(category: str | None = None, task_id: str | None = None,
             from tools.mcp_skills_registry import list_remote_skills
             all_skills.extend(list_remote_skills(get_hermes_home(), session_id or task_id))
         except Exception:
-            logger.debug("MCP skill listing failed", exc_info=True)
+            # Remote MCP skills are session-pinned state; losing them silently
+            # made an empty index look intentional (SEP-2640).
+            logger.warning("MCP remote skill listing failed; local skills only", exc_info=True)
         if not all_skills:
             return _json({"success": True, "skills": [], "categories": [],
                           "message": "No skills found in skills/ directory."})

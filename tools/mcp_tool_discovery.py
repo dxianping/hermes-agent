@@ -782,6 +782,19 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
                               else len(server._tools))
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
+            if getattr(server, "_skills_local_opt_in", False):
+                # Surface the SEP-2640 skill state so an empty prompt index is
+                # diagnosable from ``hermes mcp status``/banner instead of only
+                # process memory.
+                entry["skills"] = {
+                    "enabled": True,
+                    "advertised": bool(getattr(server, "_skills_advertised", False)),
+                    "connected": bool(getattr(server, "_skills_connected", False)),
+                    "list_completed": bool(getattr(server, "_skills_list_completed", False)),
+                    "directory_read": bool(getattr(server, "_skills_directory_read", False)),
+                    "catalog": len(getattr(server, "_skills_catalog", ()) or ()),
+                    "diagnostic": getattr(server, "_skills_diagnostic", None),
+                }
         elif status == "failed":
             entry["error"] = connect_errors[name]
         elif status == "lazy":

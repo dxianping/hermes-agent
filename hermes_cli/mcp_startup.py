@@ -151,27 +151,58 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         thread.start()
 
 
+_SKILLS_DISCOVERY_TIMEOUT = 15.0
+
+
+def _skills_opt_in_configured(config: "dict | None" = None) -> bool:
+    """True when any configured MCP server enables the Skills over MCP extension."""
+    try:
+        if config is None:
+            from hermes_cli.config import load_config
+
+            config = load_config() or {}
+        from tools.mcp_skills_protocol import skills_opted_in
+
+        servers = (config or {}).get("mcp_servers") or {}
+        return any(skills_opted_in(cfg) for cfg in servers.values() if isinstance(cfg, dict))
+    except Exception:
+        return False
+
+
 def _resolve_discovery_timeout(explicit: float | None, *, single_query: bool = False) -> float:
     """Resolve the MCP discovery wait bound: explicit arg > config.yaml > ``DEFAULT_CONFIG``.
 
     Lazy and fail-safe: a missing/invalid value or broken config falls back to a short bound so
     startup can never hang or crash.
+
+    A profile that opted into Skills over MCP gets the generous bound even in interactive mode:
+    its catalog is only published after ``tools/list`` during discovery, so the 1.5s default can
+    expire mid ``skills/list`` and freeze the session with an empty pin (SEP-2640). An explicit
+    operator value still wins.
     """
     if explicit is not None:
         return explicit
     key = "mcp_single_query_discovery_timeout" if single_query else "mcp_discovery_timeout"
     fallback = 15.0 if single_query else 1.5
+    config: dict = {}
+    default = fallback
     try:
         from hermes_cli.config import load_config, DEFAULT_CONFIG
 
         default = float(DEFAULT_CONFIG.get(key, fallback))
+        config = load_config() or {}
     except Exception:
-        return fallback
+        config = {}
     try:
-        val = float((load_config() or {}).get(key, default))
-        return val if val > 0 else default
-    except Exception:
-        return default
+        val = float(config.get(key, default))
+        val = val if val > 0 else default
+    except (TypeError, ValueError):
+        val = default
+    # Only the untouched default is too short for a skills catalog; an explicit
+    # operator value (up or down) is respected.
+    if not single_query and val == default and _skills_opt_in_configured(config):
+        return max(val, _SKILLS_DISCOVERY_TIMEOUT)
+    return val
 
 
 # GIL budget for discovery: the discovery thread does bursty CPU work (mcp/pydantic imports,

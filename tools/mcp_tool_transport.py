@@ -210,7 +210,8 @@ class MCPServerTransportMixin:
         """
         from hermes_constants import get_hermes_home
         from tools.mcp_skills_protocol import (
-            advertised_skills_settings, directory_read_advertised, list_skills, skills_opted_in,
+            SKILLS_EXTENSION, advertised_skills_settings, directory_read_advertised, list_skills,
+            skills_opted_in,
         )
         from tools.mcp_skills_registry import publish_live_catalog, server_config_fingerprint
         from tools.mcp_skills_auth import source_authorization_context
@@ -221,10 +222,16 @@ class MCPServerTransportMixin:
         generation_epoch = self._skills_epoch
         self._revoke_skills_readiness()
         if not skills_opted_in(config):
+            logger.debug("MCP server '%s': Skills over MCP not opted in; skipping skills/list", name)
             return
         self._skills_local_opt_in = True
         if advertised_skills_settings(self.initialize_result) is None:
             self._skills_diagnostic = "server did not advertise io.modelcontextprotocol/skills"
+            # Silent absence was the observability hole behind SEP-2640: the
+            # session pinned an empty catalog with no warning anywhere.
+            logger.info(
+                "MCP server '%s': Skills over MCP is enabled but the server did not advertise %s; "
+                "remote skills are unavailable for profile %s", name, SKILLS_EXTENSION, current_home)
             return
         self._skills_advertised = True
         try:
@@ -238,6 +245,8 @@ class MCPServerTransportMixin:
             fingerprint = server_config_fingerprint(config)
             directory_read = directory_read_advertised(self.initialize_result)
             publish_live_catalog(current_home, name, fingerprint, entries, auth_context=auth_context)
+            logger.info("MCP server '%s': discovered %d remote skill(s) for profile %s",
+                        name, len(entries), current_home)
             self._skills_catalog = tuple(entries)
             self._skills_config_fingerprint = fingerprint
             self._skills_directory_read = directory_read

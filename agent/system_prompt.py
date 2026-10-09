@@ -310,10 +310,21 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
-    if not hasattr(agent, "_mcp_skill_snapshot"):
+    if not getattr(agent, "_mcp_skill_snapshot", None):
+        # An empty pin is provisional, not immutable: the first pin can run
+        # before the background MCP catalog publishes (SEP-2640 race). Retry
+        # only once the live catalog actually holds rows — a lazy point-get is
+        # not catalog membership and must not leak into the index. A held
+        # non-empty pin stays frozen for the session.
         try:
-            from tools.mcp_skills_registry import pin_session
-            agent._mcp_skill_snapshot = pin_session(_agent_home(agent), getattr(agent, "session_id", None))
+            from tools.mcp_skills_registry import live_catalog_entry_count, pin_session
+            home = _agent_home(agent)
+            if not hasattr(agent, "_mcp_skill_snapshot") or live_catalog_entry_count(home) > 0:
+                snapshot = pin_session(home, getattr(agent, "session_id", None))
+                if snapshot != getattr(agent, "_mcp_skill_snapshot", None):
+                    logger.info("Remote MCP skills index for this session: %d pinned entry(ies)",
+                                len(snapshot))
+                agent._mcp_skill_snapshot = snapshot
         except Exception as exc:
             logger.warning("Could not pin remote MCP skills for this session: %s", exc)
             agent._mcp_skill_snapshot = ()

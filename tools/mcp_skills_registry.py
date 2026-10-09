@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import threading
 import re
 from contextlib import ExitStack
@@ -18,6 +20,8 @@ from tools.mcp_skills_fs import (
 )
 from tools.mcp_skills_protocol import SkillEntry, manifest_fingerprint, validate_skill_entry
 
+logger = logging.getLogger("tools.mcp_skills")
+
 _SCHEMA_VERSION = 2
 _lock = threading.RLock()
 _live: dict[tuple[str, str], dict[str, Any]] = {}
@@ -29,8 +33,12 @@ _materialized: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
 def _home_key(home: Path | str | None = None) -> str:
     # Preserve the configured root path so guarded I/O can reject a symlinked
-    # profile home instead of resolving it into an unintended scope.
-    return str(Path(home or get_hermes_home()).expanduser().absolute())
+    # profile home instead of resolving it into an unintended scope. ``normcase``
+    # folds Windows' case-insensitive spelling (and nothing on POSIX) so the MCP
+    # discovery thread (``get_hermes_home()``) and the agent-build thread
+    # (``_agent_home()``, the session-DB parent) can never disagree on the key
+    # and silently drop a published catalog (SEP-2640 home-key split).
+    return os.path.normcase(str(Path(home or get_hermes_home()).expanduser().absolute()))
 
 
 def _profile_key(home: Path | str | None = None) -> str:
@@ -184,6 +192,12 @@ def publish_live_catalog(home: Path | str, server: str, config_fingerprint: str,
     with _lock:
         require_authorization_context(server, bound_context, home)
         _live[(_home_key(home), server)] = {"entries": records}
+    if records:
+        logger.info("Published %d remote MCP skill(s) from '%s' for profile %s",
+                    len(records), server, _home_key(home))
+    else:
+        logger.debug("Published an empty remote MCP skills catalog from '%s' for profile %s",
+                     server, _home_key(home))
 
 
 def drop_live_catalog(home: Path | str, server: str) -> None:
@@ -232,6 +246,32 @@ def _load_snapshot_locked(home: Path | str, session_id: str) -> tuple[dict[str, 
         return ()
 
 
+def live_catalog_entry_count(home: Path | str | None = None) -> int:
+    """Published live-catalog row count for *home* (0 until a catalog arrives).
+
+    Callers use this to tell "no catalog published yet" apart from "catalog
+    published and every row is quarantined", so an empty session pin can be
+    retried the moment real metadata shows up (SEP-2640 late-catalog race).
+    """
+    home_key = _home_key(home)
+    with _lock:
+        return sum(len(cat["entries"]) for (live_home, _server), cat in _live.items()
+                   if live_home == home_key)
+
+
+def _live_rows_locked(home_key: str) -> tuple[dict[str, Any], ...]:
+    """Live catalog rows accumulated for one profile home while ``_lock`` is held."""
+    return tuple(row for (live_home, _server), cat in sorted(_live.items())
+                 if live_home == home_key for row in cat["entries"])
+
+
+def _publish_snapshot_locked(home_key: str, session_id: str,
+                             rows: tuple[dict[str, Any], ...]) -> None:
+    secure_atomic_json(home_key, _snapshot_rel(session_id), {
+        "schema_version": _SCHEMA_VERSION, "profile_key": _profile_key(home_key),
+        "session_id_hash": _session_token(session_id), "entries": list(rows)}, mode=0o600)
+
+
 def _pin_session_all(home: Path | str | None, session_id: str | None) -> tuple[dict[str, Any], ...]:
     """Hold visible and quarantined ownership rows; never return directly to model-facing code."""
     if not session_id:
@@ -240,8 +280,9 @@ def _pin_session_all(home: Path | str | None, session_id: str | None) -> tuple[d
     key = (home_key, session_id)
     if not _descriptor_safety_available():
         with _lock:
-            if key in _snapshots:
-                return tuple(json.loads(json.dumps(row)) for row in _snapshots[key])
+            cached = _snapshots.get(key)
+            if cached:
+                return tuple(json.loads(json.dumps(row)) for row in cached)
             if not any(live_home == home_key for live_home, _server in _live):
                 return ()
         _require_descriptor_safety()
@@ -249,13 +290,32 @@ def _pin_session_all(home: Path | str | None, session_id: str | None) -> tuple[d
         # Disk is authoritative across processes.  Reload it under the kernel
         # lock before every security-sensitive snapshot read.
         held = _load_snapshot_locked(home_key, session_id)
-        if held is None:
-            held = tuple(row for (live_home, _), cat in sorted(_live.items()) if live_home == home_key
-                         for row in cat["entries"])
-            payload = {"schema_version": _SCHEMA_VERSION, "profile_key": _profile_key(home_key),
-                       "session_id_hash": _session_token(session_id), "entries": list(held)}
-            secure_atomic_json(home_key, _snapshot_rel(session_id), payload, mode=0o600)
-        _snapshots[key] = held
+        live_rows = _live_rows_locked(home_key)
+        seed = held is None
+        # A zero-row snapshot is never a final pin: the first attempt can race
+        # the background catalog publish (or an older build persisted an empty
+        # seed), and freezing that would poison the session for its whole life.
+        # Re-seed from the live catalog as soon as it holds anything.
+        reseed = not held and bool(live_rows)
+        if seed or reseed:
+            if live_rows:
+                held = live_rows
+                _publish_snapshot_locked(home_key, session_id, held)
+                logger.info(
+                    "Pinned %d remote MCP skill(s) for session %s (profile %s)%s",
+                    len(held), session_id, home_key,
+                    " after replacing an empty seed" if reseed else "")
+            else:
+                held = ()
+                if seed:
+                    logger.debug(
+                        "No remote MCP skill catalog published yet for profile %s; "
+                        "session %s stays unpinned so a late catalog can seed it",
+                        home_key, session_id)
+        if held:
+            _snapshots[key] = held
+        else:
+            _snapshots.pop(key, None)
         return tuple(json.loads(json.dumps(row)) for row in held)
 
 
@@ -269,7 +329,10 @@ def _merge_snapshot_locked(home: str, session_id: str, additions: list[dict[str,
                            seed_live: bool = True, allow_new: bool = True) -> tuple[dict[str, Any], ...]:
     """Merge immutable manifest identities while the snapshot file lock is held."""
     current = _load_snapshot_locked(home, session_id)
-    if current is None:
+    if current is None or (not current and seed_live):
+        # Empty is not authoritative either: a legacy empty seed left by an
+        # early build must not keep a lazy point-get from inheriting the live
+        # catalog that has since arrived.
         current = tuple(row for (live_home, _), cat in sorted(_live.items())
                         if seed_live and live_home == home for row in cat["entries"])
     rows = [json.loads(json.dumps(row)) for row in current]
@@ -604,7 +667,7 @@ def continue_session(home: Path | str | None, parent_session_id: str, child_sess
         parent_snapshot = _load_snapshot_locked(home_key, parent_session_id)
         if parent_snapshot is None:
             parent_snapshot = _snapshots.get(parent_key)
-        if parent_snapshot is not None:
+        if parent_snapshot:
             _merge_snapshot_locked(
                 home_key, child_session_id,
                 [json.loads(json.dumps(row)) for row in parent_snapshot], seed_live=False)

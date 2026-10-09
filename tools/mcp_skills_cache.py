@@ -219,9 +219,10 @@ def _require_live_origin(server: Any, record: dict[str, Any], home=None) -> None
 
 def _require_live_source(server: Any, home=None, *, expected_session: Any = None,
                          expected_epoch: int | None = None) -> None:
-    requested_home = str(validate_managed_root(Path(home or get_hermes_home()).expanduser()).absolute())
-    live_home = str(validate_managed_root(
-        Path(getattr(server, "_skills_home", "") or ".").expanduser()).absolute())
+    requested_home = os.path.normcase(
+        str(validate_managed_root(Path(home or get_hermes_home()).expanduser()).absolute()))
+    live_home = os.path.normcase(str(validate_managed_root(
+        Path(getattr(server, "_skills_home", "") or ".").expanduser()).absolute()))
     retained_fingerprint = getattr(server, "_skills_config_fingerprint", "")
     current_fingerprint = server_config_fingerprint(getattr(server, "_config", {}) or {})
     current_session = getattr(server, "session", None)
