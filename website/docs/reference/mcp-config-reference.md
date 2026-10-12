@@ -36,6 +36,7 @@ mcp_servers:
     supports_parallel_tool_calls: false
     skills:
       enabled: false       # opt in to advertised SEP-2640 remote skills
+      trust: prompt        # prompt (default) | auto — honor `hermes skills trust-mcp` records
     tools:
       include: []
       exclude: []
@@ -72,6 +73,7 @@ mcp_servers:
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
 | `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. The same hint decides whether a call is transparently retried after the transport session expires mid-call: only `readOnlyHint: true` tools are replayed, while unannotated (write-capable) tools return an `outcome_uncertain` error — on a Streamable-HTTP server that expires idle sessions this means the first unannotated call after an idle period may fail and must be verified before re-invoking. Unrecognized values are treated as `untrusted` (fail-closed). A portable package can request `untrusted` for its own server in `plugin.json` (see [Portable Agent Plugins](../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages)); a `config.yaml` entry with the same name always wins |
 | `skills.enabled` | bool | both | Opt in to SEP-2640 Skills over MCP for this configured server. Default `false`; the server must also advertise `io.modelcontextprotocol/skills`. Opted-in servers connect eagerly even if `lazy: true`, because Hermes must authenticate and pin current manifests before assembling the initial session prompt. |
+| `skills.trust` | string | both | `prompt` (default) keeps every remote-skill consent gate human-answered. `auto` additionally honors persistent trust records granted with `hermes skills trust-mcp <server> <skill://…/SKILL.md>`, pre-authorizing the activation and host-execution gates for exactly those server+URI skills (including unattended runs). It never covers cross-origin reads, and Skills Guard scans, manifest/eligibility checks, and ordinary command/tool approvals still apply. Unrecognized values are treated as `prompt` (fail-closed). |
 
 ## Skills over MCP
 
@@ -167,7 +169,8 @@ server profile.
 Remote instructions remain origin-labeled and cannot enable tools, run setup
 hooks, install dependencies, or grant execution. The first host execution while
 a remote skill is active requires explicit consent bound to that exact session
-and manifest, in addition to normal approval policy. This state follows only a
+and manifest (or a configured trust record, below), in addition to normal
+approval policy. This state follows only a
 real compression continuation, not an unrelated new session or profile. Generic
 MCP `read_resource`, including for `SKILL.md`, remains an ordinary non-activating
 resource read. To activate instructions and unlock their manifested support
@@ -177,6 +180,34 @@ When more than one remote manifest is active, Hermes treats source attribution
 as ambiguous and asks per call rather than using the union of their manifests
 as authority. Managed cache, active-origin, lock, and provenance files are
 host-owned state and cannot be written through native file tools.
+
+### Configured trust for remote skills
+
+By default every consent gate above is answered by a human in the session
+(interactive CLI/TUI, gateway platforms, or an `api_server` `/v1/runs` run with
+an approval callback); unattended runs (`hermes chat -q`/`-z`, cron, webhooks
+without a callback) fail closed. To let specific remote skills run unattended,
+grant persistent trust for the exact source:
+
+```bash
+hermes skills trust-mcp <server> <skill://…/SKILL.md>
+hermes skills trusted-mcp        # list records for this profile
+hermes skills untrust-mcp <server> <skill://…/SKILL.md>
+```
+
+`trust-mcp` connects to the server once, fetches and Skills-Guard-scans that
+exact manifest, records trust in profile-local state
+(`cache/mcp-skills/trusted-origins.json` under `HERMES_HOME`), and sets
+`mcp_servers.<server>.skills.trust: auto` in `config.yaml`. Trust is bound to
+`server + exact URI` — by design a content update does not revoke it (the
+manifest fingerprint is recorded for display only), and every served manifest
+and resource is still scanned on each use. Removing the record, or setting the
+policy back to `prompt`, re-blocks the very next gate call: auto approvals are
+never cached in session consent. Trust pre-authorizes only activation and host
+execution — cross-origin reads still require per-call answers, and the first
+main-body read is auto-approved only while every other active remote origin is
+itself trusted (that read's activation decision also covers its cross-origin
+aspect).
 
 Managed remote-skill state and materialization are anchored to the managed root
 on every supported platform. POSIX walks each component through

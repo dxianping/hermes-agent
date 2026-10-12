@@ -14,6 +14,11 @@ from urllib.parse import unquote, urlsplit
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 SKILLS_EXTENSION = "io.modelcontextprotocol/skills"
+#: Defaults for the per-server ``mcp_servers.<server>.skills`` settings (documented in
+#: website/docs/reference/mcp-config-reference.md). ``trust`` — "prompt" (default) keeps every
+#: remote-skill consent gate human-answered, "auto" additionally honors explicit
+#: ``hermes skills trust-mcp`` records for the exact server+URI they name.
+MCP_SKILLS_DEFAULTS = {"enabled": False, "trust": "prompt"}
 MAX_LIST_PAGES = 50
 MAX_SKILLS = 2048
 MAX_CATALOG_BYTES = 4 * 1024 * 1024
@@ -107,7 +112,7 @@ _DIRECTORY_ADAPTER = TypeAdapter(DirectoryReadResult)
 
 
 def skills_opted_in(config: dict[str, Any] | None) -> bool:
-    value = ((config or {}).get("skills") or {}).get("enabled", False)
+    value = ((config or {}).get("skills") or {}).get("enabled", MCP_SKILLS_DEFAULTS["enabled"])
     return value is True or (isinstance(value, str) and value.strip().lower() in {"true", "1", "yes", "on"})
 
 
@@ -207,7 +212,7 @@ def manifest_fingerprint(entry: SkillEntry | dict[str, Any]) -> str:
 
 async def list_skills(session: Any, server_name: str) -> tuple[list[SkillEntry], dict[str, Any]]:
     """Return entries and first-page diagnostics, not aggregate cache authority."""
-    import mcp.types as types
+    from mcp import types
     entries: list[SkillEntry] = []
     cursor: str | None = None
     seen_cursors: set[str] = set()
@@ -236,7 +241,7 @@ async def list_skills(session: Any, server_name: str) -> tuple[list[SkillEntry],
 
 
 async def get_skill(session: Any, uri: str) -> SkillEntry:
-    import mcp.types as types
+    from mcp import types
     validate_skill_uri(uri)
     result = await session.send_request(
         types.Request[dict, str](method="skills/get", params={"uri": uri}), _GET_ADAPTER)
@@ -249,7 +254,7 @@ async def get_skill(session: Any, uri: str) -> SkillEntry:
 
 
 async def read_directory(session: Any, uri: str, cursor: str | None = None) -> DirectoryReadResult:
-    import mcp.types as types
+    from mcp import types
     params = {"uri": uri, **({"cursor": cursor} if cursor else {})}
     return await session.send_request(
         types.Request[dict, str](method="resources/directory/read", params=params), _DIRECTORY_ADAPTER)

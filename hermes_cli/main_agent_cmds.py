@@ -178,6 +178,9 @@ def cmd_skills(args):
         skills_config_command(args)
     elif action in ("trust", "untrust"):
         _cmd_skills_trust(args)
+    elif action in ("trust-mcp", "untrust-mcp", "trusted-mcp"):
+        from hermes_cli.skills_mcp_trust import cmd_skills_trust_mcp
+        return cmd_skills_trust_mcp(args)
     else:
         from hermes_cli.skills_hub import skills_command
         return skills_command(args)

@@ -35,6 +35,23 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_untrust.add_argument("path", nargs="?", default=None,
         help="Project root to untrust (default: enclosing git checkout of cwd)")
 
+    skills_trust_mcp = skills_subparsers.add_parser(
+        "trust-mcp",
+        help="Trust one remote MCP skill (skill://…) and enable auto consent for it",
+        description="Fetch and scan one exact remote MCP skill (SEP-2640), record persistent "
+            "trust for its server+URI, and set mcp_servers.<server>.skills.trust: auto. "
+            "Activation and host execution then auto-approve for this exact skill; cross-origin "
+            "reads, Skills Guard scans, and ordinary tool approvals are unchanged.")
+    skills_trust_mcp.add_argument("server", help="MCP server name from mcp_servers in config.yaml")
+    skills_trust_mcp.add_argument("uri", help="Exact skill://…/SKILL.md URI to trust")
+
+    skills_untrust_mcp = skills_subparsers.add_parser(
+        "untrust-mcp", help="Revoke trust for one remote MCP skill")
+    skills_untrust_mcp.add_argument("server", help="MCP server name from mcp_servers in config.yaml")
+    skills_untrust_mcp.add_argument("uri", help="Exact skill://…/SKILL.md URI to untrust")
+
+    skills_subparsers.add_parser("trusted-mcp", help="List trusted remote MCP skills")
+
     skills_browse = skills_subparsers.add_parser(
         "browse", help="Browse all available skills (paginated)")
     skills_browse.add_argument("--page", type=int, default=1, help="Page number (default: 1)")

@@ -1,16 +1,37 @@
-"""Non-bypassable origin gates while remote MCP skill guidance is active."""
+"""Origin consent gates while remote MCP skill guidance is active.
+
+Activation and host execution are human-answered by default. An exact ``server + URI`` record
+granted via ``hermes skills trust-mcp`` together with ``mcp_servers.<server>.skills.trust:
+auto`` pre-authorizes them (tools/mcp_skills_trust.py); cross-origin reads are always per-call.
+"""
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from hermes_constants import get_hermes_home
 from tools.mcp_skills_registry import (
     active_skills, has_execution_consent, record_execution_consent,
 )
+from tools.mcp_skills_trust import origin_auto_trusted
 from tools.registry import tool_error
 
+logger = logging.getLogger("tools.mcp_skills")
+
 _EXECUTION_TOOLS = {"terminal", "execute_code", "browser_exec"}
+
+
+def _auto_trust_activation(record: dict[str, Any], home, origins: list[dict[str, Any]]) -> bool:
+    """True when config+record trust may auto-approve this activation.
+
+    The first main-body read deliberately covers the cross-origin read with the activation
+    decision (mcp_skills_view.py skips the native read gate there), so an auto approval is
+    only safe while every already-active origin is itself auto-trusted; otherwise the
+    combined decision falls back to the human path.
+    """
+    return origin_auto_trusted(record, home) and all(
+        origin_auto_trusted(origin, home) for origin in origins)
 
 
 def _ineligible_origin_error(records, home) -> str | None:
@@ -31,6 +52,11 @@ def enforce_skill_activation_gate(record: dict[str, Any], *, home, session_id: s
     if blocked is not None:
         return blocked
     if is_active(record, home, session_id):
+        return None
+    if _auto_trust_activation(record, home, origins):
+        logger.warning(
+            "Auto-approved remote MCP skill activation under mcp_servers.%s.skills.trust=auto: "
+            "%s (manifest %s)", record["server"], record["uri"], record["manifest_fingerprint"])
         return None
     try:
         from tools.approval_prompt import request_elicitation_consent
@@ -125,6 +151,13 @@ def enforce_remote_skill_gate(tool_name: str, args: dict[str, Any], *,
             if blocked is not None:
                 return blocked
             if has_execution_consent(record, get_hermes_home(), sid):
+                continue
+            if origin_auto_trusted(record, get_hermes_home()):
+                # Deliberately not persisted to session consent: revoking the trust record (or
+                # setting trust back to prompt) re-blocks the very next call.
+                logger.warning(
+                    "Auto-approved remote MCP skill host execution under mcp_servers.%s.skills.trust=auto: "
+                    "%s (manifest %s)", record["server"], record["uri"], record["manifest_fingerprint"])
                 continue
             message = (
                 f"Remote MCP skill execution consent required for server {record['server']!r}, "
