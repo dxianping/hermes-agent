@@ -1,0 +1,281 @@
+From 5494f43cadfa83d37d5ddb8ee8ac394bee45dcd2 Mon Sep 17 00:00:00 2001
+From: "Sampee.Deng" <Sampee.Deng@quectel.com>
+Date: Mon, 12 Oct 2026 22:49:44 +0800
+Subject: [PATCH] feat(mcp-skills): blanket-trust remote skills for unattended
+ installs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Install-branch variant (kept off feat/sep-2640): a server listed in this
+profile's mcp_servers is blanket-trusted by default — every remote skill it
+serves auto-approves activation and host execution with no per-skill trust
+record. An unconfigured server still fails closed, `trust: prompt` opts a
+server back into human consent, and `trust: auto` keeps the record-gated
+behavior. Skills Guard scanning, cross-origin read consent, and ordinary
+tool approvals are unchanged.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ hermes_cli/skills_mcp_trust.py            | 11 ++++---
+ tests/hermes_cli/test_skills_mcp_trust.py | 24 ++++++++++++--
+ tests/tools/test_mcp_skills_trust.py      | 38 +++++++++++++++++++++--
+ tools/mcp_skills_consent.py               |  4 +--
+ tools/mcp_skills_protocol.py              | 10 +++---
+ tools/mcp_skills_trust.py                 | 33 ++++++++++++++------
+ 6 files changed, 95 insertions(+), 25 deletions(-)
+
+diff --git a/hermes_cli/skills_mcp_trust.py b/hermes_cli/skills_mcp_trust.py
+index 1daa96e5bc..e6f77ddea8 100644
+--- a/hermes_cli/skills_mcp_trust.py
++++ b/hermes_cli/skills_mcp_trust.py
+@@ -2,9 +2,10 @@
+ 
+ ``trust-mcp`` connects to the named server once, point-fetches the exact skill URI through the
+ runtime path (``register_skill_uri`` — same manifest validation and Skills Guard scan the agent
+-uses, no body read and no activation), records the trust, and flips the per-server
+-``mcp_servers.<server>.skills.trust`` opt-in to ``auto``. Without that config key a record alone
+-never auto-approves anything, and a Skills-Guard-blocked manifest is never recorded.
++uses, no body read and no activation) and records the trust. On this install-branch variant a
++configured server is already blanket-trusted by default, so the record is mainly an audit entry;
++only a server explicitly set to ``trust: prompt`` is flipped to ``auto``. A Skills-Guard-blocked
++manifest is never recorded.
+ """
+ from __future__ import annotations
+ 
+@@ -74,7 +75,7 @@ def _trust(args) -> None:
+     row = record_trust(server, uri, name=name,
+                        manifest_fingerprint=record.get("manifest_fingerprint") or "",
+                        config_fingerprint=record.get("config_fingerprint") or "")
+-    if trust_policy(server) != "auto":
++    if trust_policy(server) == "prompt":
+         skills_cfg = config.setdefault("mcp_servers", {}).setdefault(server, {}).setdefault("skills", {})
+         skills_cfg["trust"] = "auto"
+         save_config(config)
+@@ -108,7 +109,7 @@ def _list_trusted() -> None:
+         return
+     for row in rows:
+         policy = trust_policy(row["server"])
+-        state = "auto" if policy == "auto" else (
++        state = policy if policy in ("auto", "all") else (
+             f"inactive — set mcp_servers.{row['server']}.skills.trust: auto to apply")
+         print(f"{row['server']}  {row['uri']}")
+         print(f"    name: {row.get('name') or '—'}   "
+diff --git a/tests/hermes_cli/test_skills_mcp_trust.py b/tests/hermes_cli/test_skills_mcp_trust.py
+index c82cd11a02..dd6df614ed 100644
+--- a/tests/hermes_cli/test_skills_mcp_trust.py
++++ b/tests/hermes_cli/test_skills_mcp_trust.py
+@@ -43,7 +43,7 @@ def test_parser_wires_the_three_mcp_trust_actions():
+     assert args.skills_action == "trusted-mcp"
+ 
+ 
+-def test_trust_mcp_fetches_records_and_enables_policy(cli_home, monkeypatch, capsys):
++def test_trust_mcp_fetches_records_and_leaves_blanket_default(cli_home, monkeypatch, capsys):
+     calls = []
+     record = {"frontmatter": {"name": "remote-demo"}, "manifest_fingerprint": "f" * 64,
+               "config_fingerprint": "config-a"}
+@@ -63,7 +63,27 @@ def test_trust_mcp_fetches_records_and_enables_policy(cli_home, monkeypatch, cap
+     from tools.mcp_skills_trust import is_origin_trusted
+     assert is_origin_trusted("fixture", _URI, cli_home)
+     raw = (cli_home / "config.yaml").read_text(encoding="utf-8")
+-    assert "trust: auto" in raw and "enabled: true" in raw
++    # INSTALL-BRANCH VARIANT: the configured server is already blanket-trusted by default,
++    # so recording the trust needs no config write.
++    assert "trust:" not in raw and "enabled: true" in raw
++
++
++def test_trust_mcp_flips_explicit_prompt_policy_to_auto(cli_home, monkeypatch, capsys):
++    (cli_home / "config.yaml").write_text(
++        "mcp_servers:\n  fixture:\n    url: http://127.0.0.1:1/mcp\n"
++        "    skills:\n      enabled: true\n      trust: prompt\n", encoding="utf-8")
++    record = {"frontmatter": {"name": "remote-demo"}, "manifest_fingerprint": "f" * 64,
++              "config_fingerprint": "config-a"}
++    monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", lambda names=None: [])
++    monkeypatch.setattr("tools.mcp_skills_cache.register_skill_uri",
++                        lambda server, uri, session_id=None, **kw: record)
++    monkeypatch.setattr("tools.mcp_tool_lifecycle._stop_mcp_loop_if_idle", lambda: None)
++
++    args, cmd_skills = _args("trust-mcp", "fixture", _URI)
++    cmd_skills(args)
++    out = capsys.readouterr().out
++    assert "Enabled mcp_servers.fixture.skills.trust: auto" in out
++    assert "trust: auto" in (cli_home / "config.yaml").read_text(encoding="utf-8")
+ 
+ 
+ def test_trust_mcp_refuses_when_skills_guard_blocks(cli_home, monkeypatch, capsys):
+diff --git a/tests/tools/test_mcp_skills_trust.py b/tests/tools/test_mcp_skills_trust.py
+index 2bcdbb2db9..8f547a7c63 100644
+--- a/tests/tools/test_mcp_skills_trust.py
++++ b/tests/tools/test_mcp_skills_trust.py
+@@ -3,6 +3,9 @@
+ Regression for GAP-SEP2640-skills-consent-not-configurable: ``mcp_servers.<server>.skills.trust:
+ auto`` plus an exact ``hermes skills trust-mcp`` record may pre-authorize activation and host
+ execution; everything else — cross-origin reads, Skills Guard, eligibility, default deny — stays.
++
++INSTALL-BRANCH VARIANT: a server listed in this profile's ``mcp_servers`` is blanket-trusted by
++default ("all"); an unconfigured server still fails closed and ``trust: prompt`` opts out.
+ """
+ from __future__ import annotations
+ 
+@@ -60,12 +63,16 @@ def _record(record, home):
+ def test_trust_policy_reads_only_recognized_values_from_user_config(held):
+     home, _record_row = held
+     from tools.mcp_skills_trust import trust_policy
+-    assert trust_policy("fixture") == "prompt"  # no config.yaml key
++    assert trust_policy("fixture") == "prompt"  # unconfigured server fails closed
++    assert trust_policy("not-configured") == "prompt"
++    _write_config(home)  # configured, no trust key -> blanket default on this branch
++    assert trust_policy("fixture") == "all"
+     _write_config(home, trust="auto")
+     assert trust_policy("fixture") == "auto"
++    _write_config(home, trust="all")
++    assert trust_policy("fixture") == "all"
+     _write_config(home, trust="yes")
+     assert trust_policy("fixture") == "prompt"
+-    assert trust_policy("not-configured") == "prompt"
+ 
+ 
+ def test_trust_store_roundtrip_remove_and_profile_isolation(held, tmp_path):
+@@ -196,3 +203,30 @@ def test_cross_origin_reads_stay_prompted_for_trusted_origins(held, monkeypatch)
+     blocked = enforce_remote_skill_gate(
+         tool_name, {"uri": "skill://fixture/elsewhere/SKILL.md"}, session_id="session-x")
+     assert blocked is not None and "cross-origin" in blocked
++
++
++def test_configured_server_blanket_trusts_every_skill_by_default(held, monkeypatch):
++    """INSTALL-BRANCH VARIANT: a configured server with no trust key auto-approves both gates."""
++    home, record = held
++    from tools import approval_prompt
++    from tools import mcp_skills_registry as registry
++    from tools.mcp_skills_consent import enforce_remote_skill_gate, enforce_skill_activation_gate
++
++    _write_config(home)  # configured, enabled, no trust key
++    monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
++                        lambda *a, **k: pytest.fail("blanket trust must not prompt"))
++    assert enforce_skill_activation_gate(record, home=home, session_id="session-a") is None
++    registry.mark_active(record, home, "session-a")
++    assert enforce_remote_skill_gate("terminal", {"command": "printf ok"}, session_id="session-a") is None
++    assert not registry.has_execution_consent(record, home, "session-a")
++
++
++def test_explicit_prompt_policy_opts_out_of_blanket_trust(held, monkeypatch):
++    home, record = held
++    from tools import approval_prompt
++    from tools.mcp_skills_consent import enforce_skill_activation_gate
++
++    _write_config(home, trust="prompt")
++    monkeypatch.setattr(approval_prompt, "request_elicitation_consent", lambda *a, **k: "decline")
++    blocked = enforce_skill_activation_gate(record, home=home, session_id="session-a")
++    assert blocked is not None and "activation was not approved" in blocked
+diff --git a/tools/mcp_skills_consent.py b/tools/mcp_skills_consent.py
+index 170a12f7e9..3c6533d30c 100644
+--- a/tools/mcp_skills_consent.py
++++ b/tools/mcp_skills_consent.py
+@@ -55,7 +55,7 @@ def enforce_skill_activation_gate(record: dict[str, Any], *, home, session_id: s
+         return None
+     if _auto_trust_activation(record, home, origins):
+         logger.warning(
+-            "Auto-approved remote MCP skill activation under mcp_servers.%s.skills.trust=auto: "
++            "Auto-approved remote MCP skill activation under configured mcp_servers.%s.skills.trust policy: "
+             "%s (manifest %s)", record["server"], record["uri"], record["manifest_fingerprint"])
+         return None
+     try:
+@@ -156,7 +156,7 @@ def enforce_remote_skill_gate(tool_name: str, args: dict[str, Any], *,
+                 # Deliberately not persisted to session consent: revoking the trust record (or
+                 # setting trust back to prompt) re-blocks the very next call.
+                 logger.warning(
+-                    "Auto-approved remote MCP skill host execution under mcp_servers.%s.skills.trust=auto: "
++                    "Auto-approved remote MCP skill host execution under configured mcp_servers.%s.skills.trust policy: "
+                     "%s (manifest %s)", record["server"], record["uri"], record["manifest_fingerprint"])
+                 continue
+             message = (
+diff --git a/tools/mcp_skills_protocol.py b/tools/mcp_skills_protocol.py
+index 6df9426c24..6bd106ba68 100644
+--- a/tools/mcp_skills_protocol.py
++++ b/tools/mcp_skills_protocol.py
+@@ -14,11 +14,11 @@ from urllib.parse import unquote, urlsplit
+ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+ 
+ SKILLS_EXTENSION = "io.modelcontextprotocol/skills"
+-#: Defaults for the per-server ``mcp_servers.<server>.skills`` settings (documented in
+-#: website/docs/reference/mcp-config-reference.md). ``trust`` — "prompt" (default) keeps every
+-#: remote-skill consent gate human-answered, "auto" additionally honors explicit
+-#: ``hermes skills trust-mcp`` records for the exact server+URI they name.
+-MCP_SKILLS_DEFAULTS = {"enabled": False, "trust": "prompt"}
++#: Defaults for the per-server ``mcp_servers.<server>.skills`` settings. INSTALL-BRANCH
++#: VARIANT: ``trust`` defaults to "all" — every skill served by a server this profile lists
++#: in ``mcp_servers`` is trusted; "auto" keeps ``hermes skills trust-mcp`` record-gated
++#: trust, "prompt" restores human consent. See the ``installer`` branch README.
++MCP_SKILLS_DEFAULTS = {"enabled": False, "trust": "all"}
+ MAX_LIST_PAGES = 50
+ MAX_SKILLS = 2048
+ MAX_CATALOG_BYTES = 4 * 1024 * 1024
+diff --git a/tools/mcp_skills_trust.py b/tools/mcp_skills_trust.py
+index 19fcce1be4..a785603b57 100644
+--- a/tools/mcp_skills_trust.py
++++ b/tools/mcp_skills_trust.py
+@@ -12,6 +12,11 @@ The recorded manifest fingerprint is informational (shown by ``hermes skills tru
+ by design a content update does not revoke trust — the server is the trusted identity, and
+ every served manifest still goes through the scan chain. Removing the record or setting the
+ policy back to ``prompt`` re-blocks the next gate call; auto approvals are never cached.
++
++INSTALL-BRANCH VARIANT (see the ``installer`` branch): a server this profile lists in
++``mcp_servers`` is blanket-trusted by default ("all") — every skill it serves auto-approves
++activation and host execution with no per-skill record. ``trust: prompt`` opts a server back
++into human consent; ``trust: auto`` keeps the record-gated behavior.
+ """
+ from __future__ import annotations
+ 
+@@ -64,19 +69,23 @@ def _write_rows(home_key: str, rows: dict[tuple[str, str], dict[str, Any]]) -> N
+ 
+ 
+ def trust_policy(server: str) -> str:
+-    """``mcp_servers.<server>.skills.trust`` from the USER's config: ``"auto"`` or ``"prompt"``.
++    """``mcp_servers.<server>.skills.trust`` from the USER's config: "auto", "all" or "prompt".
+ 
+-    Read through the merged user config (never the plugin/portable-server merge in
+-    ``mcp_tool_config._load_mcp_config``) so a package can never widen trust; anything
+-    unreadable or unrecognized fails closed to ``"prompt"``.
++    INSTALL-BRANCH VARIANT: a server this profile configures is blanket-trusted by default
++    ("all"); an unconfigured server fails closed to "prompt". Read through the merged user
++    config (never the plugin/portable-server merge in ``mcp_tool_config._load_mcp_config``)
++    so a package can never widen trust; anything unreadable or unrecognized is "prompt".
+     """
+     from hermes_cli.config import load_config_readonly
+     try:
+         servers = load_config_readonly().get("mcp_servers")
+         entry = servers.get(server) if isinstance(servers, dict) else None
+-        skills = entry.get("skills") if isinstance(entry, dict) else None
++        if not isinstance(entry, dict):
++            return "prompt"
++        skills = entry.get("skills")
+         value = skills.get("trust", MCP_SKILLS_DEFAULTS["trust"]) if isinstance(skills, dict) else None
+-        return "auto" if isinstance(value, str) and value.strip().lower() == "auto" else "prompt"
++        text = value.strip().lower() if isinstance(value, str) else ""
++        return text if text in ("auto", "all") else "prompt"
+     except Exception:  # fail closed: any config-read failure means "prompt"
+         logger.debug("Could not read MCP skills trust policy for %r", server, exc_info=True)
+         return "prompt"
+@@ -90,10 +99,16 @@ def is_origin_trusted(server: str, uri: str, home: Path | str | None = None) ->
+ 
+ 
+ def origin_auto_trusted(record: dict[str, Any], home: Path | str | None = None) -> bool:
+-    """``is_origin_trusted`` for a pinned record, gated by the per-server config opt-in."""
++    """Auto-approval check for a pinned record, gated by the per-server config policy.
++
++    INSTALL-BRANCH VARIANT: "all" (the configured-server default) trusts every URI the
++    server serves; "auto" keeps the ``hermes skills trust-mcp`` record requirement.
++    """
+     server = record.get("server") or ""
+-    uri = record.get("uri") or ""
+-    return trust_policy(server) == "auto" and is_origin_trusted(server, uri, home)
++    policy = trust_policy(server)
++    if policy == "all":
++        return True
++    return policy == "auto" and is_origin_trusted(server, record.get("uri") or "", home)
+ 
+ 
+ def record_trust(server: str, uri: str, *, home: Path | str | None = None, name: str = "",
+-- 
+2.54.0.windows.1
+
