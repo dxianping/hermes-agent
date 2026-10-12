@@ -108,6 +108,24 @@ def test_installed_desktop_app_can_be_read_but_never_changed(tmp_path, monkeypat
     assert plist.read_text(encoding="utf-8") == "unchanged"
 
 
+@pytest.mark.platforms("posix")
+def test_guard_preserves_descriptor_capabilities_and_blocks_relative_home_io(protected_home, tmp_path):
+    from tools.mcp_skills_fs import secure_atomic_bytes, secure_read_bytes
+
+    assert all(fn in os.supports_dir_fd for fn in (os.open, os.mkdir, os.unlink))
+    allowed = tmp_path / "managed"
+    allowed.mkdir()
+    secure_atomic_bytes(allowed, Path("nested") / "file.txt", b"verified")
+    assert secure_read_bytes(allowed, Path("nested") / "file.txt") == b"verified"
+
+    parent_fd = os.open(protected_home.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            os.open("protected/file.txt", os.O_RDONLY, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def test_unprotected_paths_and_open_descriptors_still_work(protected_home, tmp_path):
     target = tmp_path / "allowed" / "file.txt"
     target.parent.mkdir()
