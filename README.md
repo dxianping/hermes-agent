@@ -12,28 +12,14 @@
 - **SEP-2640 "Skills over MCP"** —— 原生远程技能（`skills/list`、`skills/get`、`resources/read`），含 Skills Guard 授权边界与会话级 pin
 - **Windows 文件系统后端** —— 用 junction 而非符号链接、`portalocker` 替代 `fcntl.flock`、空 pin 自愈
 
-`main` 是上游镜像，不承载魔改。本 `installer` 是**孤儿分支**，只放安装说明和引导脚本，与代码分支无共同历史。
+`main` 是上游镜像，不承载魔改。`installer` 是**孤儿分支**，只放这份安装说明，与代码分支无共同历史。
 
-### 一键安装
+### 安装
+
+官方安装脚本原生支持指定仓库和分支（环境变量 `HERMES_REPO_URL` + 参数 `-Branch` / `--branch`），
+**直接用官方脚本即可，不需要额外的安装器**：
 
 **Windows（PowerShell）**
-
-```powershell
-irm https://raw.githubusercontent.com/dxianping/hermes-agent/installer/install.ps1 | iex
-```
-
-**Linux / macOS**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/dxianping/hermes-agent/installer/install.sh | bash
-```
-
-### 不用引导脚本（直接调官方安装器）
-
-引导脚本做的事只有一件：把仓库指向本 fork、分支指向 `feat/sep-2640`。
-官方安装脚本原生支持这两个参数，所以也可以直接调用：
-
-**Windows**
 
 ```powershell
 $env:HERMES_REPO_URL = 'https://github.com/dxianping/hermes-agent.git'
@@ -47,9 +33,8 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh \
   | HERMES_REPO_URL=https://github.com/dxianping/hermes-agent.git bash -s -- --branch feat/sep-2640
 ```
 
-> 官方 `install.ps1` / `install.sh` 已内建 `HERMES_REPO_URL` + `-Branch` / `--branch`，
-> 因此不需要维护一份 fork 版的安装器。Windows 上 `irm ... | iex` 无法传参，
-> 所以要用上面的 `[scriptblock]::Create(...)` 形式。
+> Windows 上 `irm ... | iex` 无法传参，所以用上面的 `[scriptblock]::Create(...)` 形式；
+> Linux 上的 `bash -s --` 用于把参数传给管道里的脚本。
 
 ### 更新
 
@@ -66,27 +51,22 @@ hermes update
 git remote add upstream https://github.com/NousResearch/hermes-agent.git
 ```
 
-### 可选参数
+### 常用参数
 
-引导脚本会把额外参数原样透传给官方安装器：
+官方安装脚本支持的其他参数：
 
 | 参数 | 说明 |
 |---|---|
-| `--skip-setup` / `-NonInteractive` | 跳过交互式初始化 |
-| `--skip-browser` / `-SkipBrowser` | 不安装浏览器工具 |
-| `--skip-computer-use` / `-SkipComputerUse` | 不安装 computer-use |
-| `--include-desktop` / `-IncludeDesktop` | 一并安装桌面端 |
+| `-NonInteractive` / `--skip-setup` | 跳过交互式初始化 |
+| `-SkipBrowser` / `--skip-browser` | 不安装浏览器工具 |
+| `-SkipComputerUse` / `--skip-computer-use` | 不安装 computer-use |
+| `-IncludeDesktop` / `--include-desktop` | 一并安装桌面端 |
+| `-Commit <sha>` / `--commit <sha>` | 固定到某个提交 |
 | `--dir <路径>` | 自定义安装目录 |
-
-例：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/dxianping/hermes-agent/installer/install.sh | bash -s -- --skip-setup
-```
 
 ### 回到官方版本
 
-在安装目录里把远端改回上游，或直接卸载后按官方文档重装：
+在安装目录里把远端改回上游，或卸载后按官方文档重装：
 
 ```bash
 git -C <安装目录> remote set-url origin https://github.com/NousResearch/hermes-agent.git
@@ -102,29 +82,16 @@ The modifications live on the **`feat/sep-2640`** branch:
 - **SEP-2640 "Skills over MCP"** — native remote skills (`skills/list`, `skills/get`, `resources/read`) with the Skills Guard authorization boundary and per-session pinning
 - **Windows filesystem backend** — junctions instead of symlinks, `portalocker` instead of `fcntl.flock`, self-healing of empty session pins
 
-`main` mirrors upstream and carries no modifications. This `installer` branch is an **orphan branch**:
-it holds only the install instructions and bootstrap scripts, and shares no history with the code branches.
+`main` mirrors upstream and carries no modifications. `installer` is an **orphan branch**: it holds
+only these install instructions and shares no history with the code branches.
 
-### One-command install
+### Install
+
+The official installer already accepts a custom repository and branch (the `HERMES_REPO_URL`
+environment variable plus `-Branch` / `--branch`), so **use the official script directly — no extra
+installer is needed**:
 
 **Windows (PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/dxianping/hermes-agent/installer/install.ps1 | iex
-```
-
-**Linux / macOS**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/dxianping/hermes-agent/installer/install.sh | bash
-```
-
-### Without the bootstrap scripts
-
-All the bootstrap scripts do is point the repo at this fork and the branch at `feat/sep-2640`.
-The official installers accept both natively, so you can call them directly:
-
-**Windows**
 
 ```powershell
 $env:HERMES_REPO_URL = 'https://github.com/dxianping/hermes-agent.git'
@@ -138,10 +105,8 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh \
   | HERMES_REPO_URL=https://github.com/dxianping/hermes-agent.git bash -s -- --branch feat/sep-2640
 ```
 
-> The official `install.ps1` / `install.sh` already support `HERMES_REPO_URL` plus
-> `-Branch` / `--branch`, so there is no need to maintain a forked installer.
-> On Windows `irm ... | iex` cannot take parameters — hence the
-> `[scriptblock]::Create(...)` form above.
+> On Windows `irm ... | iex` cannot take parameters — hence the `[scriptblock]::Create(...)` form.
+> On Linux, `bash -s --` passes the arguments through to the script on stdin.
 
 ### Updating
 
@@ -161,21 +126,16 @@ git remote add upstream https://github.com/NousResearch/hermes-agent.git
 
 ### Options
 
-The bootstrap scripts pass any extra arguments straight through to the official installer:
+Other arguments the official installer accepts:
 
 | Option | Description |
 |---|---|
-| `--skip-setup` / `-NonInteractive` | Skip interactive setup |
-| `--skip-browser` / `-SkipBrowser` | Do not install browser tooling |
-| `--skip-computer-use` / `-SkipComputerUse` | Do not install computer-use |
-| `--include-desktop` / `-IncludeDesktop` | Also install the desktop app |
+| `-NonInteractive` / `--skip-setup` | Skip interactive setup |
+| `-SkipBrowser` / `--skip-browser` | Do not install browser tooling |
+| `-SkipComputerUse` / `--skip-computer-use` | Do not install computer-use |
+| `-IncludeDesktop` / `--include-desktop` | Also install the desktop app |
+| `-Commit <sha>` / `--commit <sha>` | Pin to a specific commit |
 | `--dir <path>` | Custom install directory |
-
-Example:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/dxianping/hermes-agent/installer/install.sh | bash -s -- --skip-setup
-```
 
 ### Back to upstream
 
