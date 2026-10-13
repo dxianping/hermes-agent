@@ -9,7 +9,7 @@ connected would otherwise have its skills silently switched back on.
 
 import pytest
 
-from hermes_cli import skills_config
+from hermes_cli import skills_config, skills_remote
 
 
 LOCAL = [{"name": "deploy", "description": "local deploy", "category": "general"}]
@@ -62,7 +62,7 @@ def test_no_opted_in_server_means_no_connection_attempt(monkeypatch, stub_remote
     stub_remote["servers"] = set()
     stub_remote["rows"] = []
     called = []
-    monkeypatch.setattr(skills_config, "_connect_skills_servers", lambda s: called.append(s))
+    monkeypatch.setattr(skills_remote, "_connect_servers", lambda s: called.append(s))
     assert [s["name"] for s in skills_config._list_all_skills()] == ["deploy"]
     assert called == []
 
@@ -71,7 +71,7 @@ def test_an_empty_catalog_connects_once_to_the_opted_in_servers(monkeypatch, stu
     _patch_local(monkeypatch)
     stub_remote["rows"] = []
     called = []
-    monkeypatch.setattr(skills_config, "_connect_skills_servers", lambda s: called.append(s))
+    monkeypatch.setattr(skills_remote, "_connect_servers", lambda s: called.append(s))
     skills_config._list_all_skills()
     assert called == [["acme"]], "only the servers that publish skills are contacted"
 
@@ -114,3 +114,50 @@ def test_switching_everything_off_disables_exactly_the_listed_rows():
     skills = [dict(LOCAL[0]), dict(REMOTE[0])]
     new = skills_config._disabled_after_selection(skills, {"stale::gone"}, chosen=set())
     assert new == {"stale::gone", "deploy", "acme::jira"}
+
+
+# ── `hermes skills list` is a different surface and must show them too ──────
+
+def test_do_list_shows_remote_skills_with_their_source(monkeypatch, stub_remote):
+    """The plain listing is where most people look first; it gets the same rows."""
+    import io
+
+    from rich.console import Console
+
+    from hermes_cli import skills_hub
+
+    console = Console(file=io.StringIO(), width=200)
+    skills_hub.do_list(console=console)
+    out = console.file.getvalue()
+    assert "acme::jira" in out, out
+    assert "mcp/acme" in out, out
+    assert "1 remote" in out, out
+
+
+def test_do_list_omits_the_remote_count_when_there_are_none(monkeypatch, stub_remote):
+    import io
+
+    from rich.console import Console
+
+    from hermes_cli import skills_hub
+
+    stub_remote["servers"] = set()
+    stub_remote["rows"] = []
+    console = Console(file=io.StringIO(), width=200)
+    skills_hub.do_list(console=console)
+    assert "remote" not in console.file.getvalue()
+
+
+def test_source_mcp_selects_only_the_remote_rows(monkeypatch, stub_remote):
+    import io
+
+    from rich.console import Console
+
+    from hermes_cli import skills_hub
+
+    _patch_local(monkeypatch)
+    console = Console(file=io.StringIO(), width=200)
+    skills_hub.do_list(source_filter="mcp", console=console)
+    out = console.file.getvalue()
+    assert "acme::jira" in out, out
+    assert "deploy" not in out, out
