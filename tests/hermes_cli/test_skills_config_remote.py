@@ -13,7 +13,7 @@ from hermes_cli import skills_config, skills_remote
 
 
 LOCAL = [{"name": "deploy", "description": "local deploy", "category": "general"}]
-REMOTE = [{"name": "acme::jira", "description": "remote jira", "category": "mcp/acme",
+REMOTE = [{"name": "acme::team/jira", "description": "remote jira", "category": "mcp/acme",
            "server": "acme", "uri": "skill://team/jira/SKILL.md",
            "source": {"backend": "mcp", "remote": True}}]
 
@@ -40,7 +40,7 @@ def _patch_local(monkeypatch, rows=LOCAL):
 def test_remote_skills_are_listed_alongside_local_ones(monkeypatch, stub_remote):
     _patch_local(monkeypatch)
     names = [s["name"] for s in skills_config._list_all_skills()]
-    assert names == ["deploy", "acme::jira"]
+    assert names == ["deploy", "acme::team/jira"]
 
 
 def test_the_row_name_is_the_key_the_disable_list_stores(monkeypatch, stub_remote):
@@ -94,14 +94,14 @@ def test_a_broken_remote_path_leaves_the_screen_working(monkeypatch, stub_remote
 def test_an_entry_for_an_unlisted_skill_survives_a_save():
     """A remote skill whose server is down is not in the list — its entry must remain."""
     skills = [dict(LOCAL[0])]
-    disabled = {"acme::jira", "plugin:thing", "deploy"}
+    disabled = {"acme::team/jira", "plugin:thing", "deploy"}
     assert skills_config._disabled_after_selection(skills, disabled, chosen=set()) == disabled
 
 
 def test_an_unlisted_entry_survives_even_when_every_listed_skill_is_enabled():
     skills = [dict(LOCAL[0])]
-    new = skills_config._disabled_after_selection(skills, {"acme::jira", "deploy"}, chosen={0})
-    assert new == {"acme::jira"}
+    new = skills_config._disabled_after_selection(skills, {"acme::team/jira", "deploy"}, chosen={0})
+    assert new == {"acme::team/jira"}
 
 
 def test_the_listed_rows_are_recomputed_from_the_selection():
@@ -113,7 +113,7 @@ def test_the_listed_rows_are_recomputed_from_the_selection():
 def test_switching_everything_off_disables_exactly_the_listed_rows():
     skills = [dict(LOCAL[0]), dict(REMOTE[0])]
     new = skills_config._disabled_after_selection(skills, {"stale::gone"}, chosen=set())
-    assert new == {"stale::gone", "deploy", "acme::jira"}
+    assert new == {"stale::gone", "deploy", "acme::team/jira"}
 
 
 # ── `hermes skills list` is a different surface and must show them too ──────
@@ -129,7 +129,7 @@ def test_do_list_shows_remote_skills_with_their_source(monkeypatch, stub_remote)
     console = Console(file=io.StringIO(), width=200)
     skills_hub.do_list(console=console)
     out = console.file.getvalue()
-    assert "acme::jira" in out, out
+    assert "acme::team/jira" in out, out
     assert "mcp/acme" in out, out
     assert "1 remote" in out, out
 
@@ -159,5 +159,5 @@ def test_source_mcp_selects_only_the_remote_rows(monkeypatch, stub_remote):
     console = Console(file=io.StringIO(), width=200)
     skills_hub.do_list(source_filter="mcp", console=console)
     out = console.file.getvalue()
-    assert "acme::jira" in out, out
+    assert "acme::team/jira" in out, out
     assert "deploy" not in out, out
