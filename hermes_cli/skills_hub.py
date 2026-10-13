@@ -969,7 +969,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     builtin_names = set(_read_manifest())
     # Rows are what skill_view loads: shadowed copies hidden, same-tier duplicates under their exact path.
     all_skills = [{**s, "name": s["load_name"]} for s in _skill_catalog(skip_disabled=True) if s["load_name"]]
-    all_skills.extend(remote_skill_rows(notice=lambda message: c.print(f"[dim]  {message}[/]")))
+    all_skills.extend(remote_skill_rows())
     root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 
