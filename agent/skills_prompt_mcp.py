@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -18,47 +19,66 @@ logger = logging.getLogger(__name__)
 # block that must stay byte-stable for the life of a conversation.
 MAX_REMOTE_DESCRIPTION = 300
 _TRUNCATION_SUFFIX = "…"
+MAIN_FILE_NAME = "SKILL.md"
 
 
-def qualified_name(server: str, name: str) -> str:
+def locator_of(uri: str) -> str:
+    """``skill://builtin/del/SKILL.md`` → ``builtin/del`` — the URI's own path.
+
+    The key is built from this, never from the frontmatter ``name``. A skill's
+    identity is its URI; the name is a label it chose, and two skills on one server
+    are free to share one. A name-built key would collapse those two into a single
+    entry: one row, one disable, one load — and the model told there is one skill
+    where the server published two.
+
+    The ``SKILL.md`` tail is dropped because it is in every skill's URI and so
+    distinguishes nothing; what is left is what a person reads to tell two skills
+    apart.
+    """
+    parts = urlsplit(uri if isinstance(uri, str) else "")
+    path = parts.path[: -len(MAIN_FILE_NAME)] if parts.path.endswith("/" + MAIN_FILE_NAME) else parts.path
+    return f"{parts.netloc}{path}".strip("/")
+
+
+def qualified_name(server: str, uri: str) -> str:
     """The load key the index advertises, ``skill_view`` resolves, and the enable/disable
     list names this skill by.
 
     Double colon, deliberately not plugin's single-colon ``plugin:skill``: the two
-    namespaces must stay distinguishable in one string, and a bare ``name`` never
+    namespaces must stay distinguishable in one string, and a bare ``uri`` never
     silently means "the remote one" — the server label is always in front of it.
     """
-    return f"{server}::{name}"
+    return f"{server}::{locator_of(uri)}"
 
 
 def split_qualified(name: str) -> Optional[tuple[str, str]]:
-    """``("skills", "jira")`` for a well-formed qualified key, else None.
+    """``("skills", "builtin/del")`` for a well-formed qualified key, else None.
 
-    Split on the FIRST ``::``: a skill's own name may contain colons, while the
-    server label (a host-assigned config key) cannot — and a single colon means
-    the plugin namespace, which this never claims.
+    Split on the FIRST ``::``: a locator may contain colons, while the server label
+    (a host-assigned config key) cannot — and a single colon means the plugin
+    namespace, which this never claims.
     """
     if not isinstance(name, str) or "::" not in name:
         return None
-    server, bare = name.split("::", 1)
-    if not server or not bare:
+    server, locator = name.split("::", 1)
+    if not server or not locator:
         return None
-    return server, bare
+    return server, locator
 
 
-def remote_entry_disabled(server: str, name: str, disabled: Optional[set[str]] = None) -> bool:
+def remote_entry_disabled(server: str, uri: str, disabled: Optional[set[str]] = None) -> bool:
     """Whether this remote skill is switched off by the profile's skills config.
 
-    Matched on the qualified name only. ``skills.disabled`` is a list of *names*, and
+    Matched on the qualified key only. ``skills.disabled`` is a list of *names*, and
     a remote skill's stable name is this key — the server label and the SKILL.md URI
-    locate it, they are not a second authorization dimension. A bare ``name`` is
+    locate it, they are not a second authorization dimension. A bare local name is
     deliberately not matched: an entry written for a local skill must not silently
-    switch off an unrelated remote skill that happens to share the name.
+    switch off an unrelated remote skill that happens to share a name.
     """
     if disabled is None:
         from agent.skill_utils import get_disabled_skill_names
         disabled = get_disabled_skill_names()
-    return qualified_name(server, name) in disabled
+    return qualified_name(server, uri) in disabled
 
 
 def mcp_skill_rows(disabled: set[str], available_tools: Optional[set[str]],
@@ -99,9 +119,10 @@ def mcp_skill_rows(disabled: set[str], available_tools: Optional[set[str]],
             # Debounced inside the manager; a prompt build never waits for the result.
             manager.request_refresh(snapshot.origin_id, scope_id, reason="stale-metadata")
         token.append((snapshot.origin_id, snapshot.snapshot_revision))
-        for entry in sorted(snapshot.entries.values(), key=lambda e: e.name):
-            key = qualified_name(snapshot.origin_id, entry.name)
-            if remote_entry_disabled(snapshot.origin_id, entry.name, disabled):
+        for entry in sorted(snapshot.entries.values(),
+                            key=lambda e: qualified_name(snapshot.origin_id, e.identity.locator)):
+            key = qualified_name(snapshot.origin_id, entry.identity.locator)
+            if remote_entry_disabled(snapshot.origin_id, entry.identity.locator, disabled):
                 continue
             frontmatter: Any = entry.frontmatter
             try:
