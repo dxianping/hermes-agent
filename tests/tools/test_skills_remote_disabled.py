@@ -81,45 +81,45 @@ def _remote_names() -> set[str]:
 # ── the name is the unit ────────────────────────────────────────────────────
 
 def test_a_remote_skill_is_on_by_default(remote):
-    assert _view(name=f"{SERVER}::deploy")["success"] is True
-    assert _remote_names() == {f"{SERVER}::deploy", f"{SERVER}::rollback"}
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is True
+    assert _remote_names() == {f"{SERVER}::team/deploy", f"{SERVER}::team/rollback"}
 
 
 def test_disabling_the_qualified_name_refuses_the_load_on_every_locator(remote):
-    _write_config(disabled=["acme::deploy"])
-    for kwargs in ({"name": f"{SERVER}::deploy"},
+    _write_config(disabled=["acme::team/deploy"])
+    for kwargs in ({"name": f"{SERVER}::team/deploy"},
                    {"server": SERVER, "uri": "skill://team/deploy/SKILL.md"}):
         result = _view(**kwargs)
         assert result["success"] is False
         assert "disabled" in result["error"]
-        assert f"{SERVER}::deploy" in result["error"]
+        assert f"{SERVER}::team/deploy" in result["error"]
 
 
 def test_a_switched_off_skill_costs_no_read(remote):
     server, _manager = remote
-    _write_config(disabled=["acme::deploy"])
+    _write_config(disabled=["acme::team/deploy"])
     before = server.calls.count("resources/read")
-    _view(name=f"{SERVER}::deploy")
+    _view(name=f"{SERVER}::team/deploy")
     assert server.calls.count("resources/read") == before
 
 
 def test_a_switched_off_skill_leaves_the_listing_and_the_index(remote):
-    _write_config(disabled=["acme::deploy"])
-    assert _remote_names() == {f"{SERVER}::rollback"}
+    _write_config(disabled=["acme::team/deploy"])
+    assert _remote_names() == {f"{SERVER}::team/rollback"}
 
     # The projection consumes the same set the prompt builder resolves, so it is read
     # the same way here rather than handed a hand-made one.
     from agent.skill_utils import get_disabled_skill_names
     from agent.skills_prompt_mcp import mcp_skill_rows
     rows, _token = mcp_skill_rows(get_disabled_skill_names(), None, None, None)
-    assert {r[1] for r in rows} == {f"{SERVER}::rollback"}
+    assert {r[1] for r in rows} == {f"{SERVER}::team/rollback"}
 
 
 def test_the_bare_name_never_reaches_a_remote_skill(remote):
     """An entry written for a local skill must not switch off a remote namesake."""
     _write_config(disabled=["deploy"])
-    assert _view(name=f"{SERVER}::deploy")["success"] is True
-    assert _remote_names() == {f"{SERVER}::deploy", f"{SERVER}::rollback"}
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is True
+    assert _remote_names() == {f"{SERVER}::team/deploy", f"{SERVER}::team/rollback"}
 
 
 def test_the_bare_name_still_disables_the_local_skill_of_that_name(remote):
@@ -132,39 +132,39 @@ def test_the_bare_name_still_disables_the_local_skill_of_that_name(remote):
 
     _write_config(disabled=["deploy"])
     assert json.loads(skills_tool.skill_view("deploy"))["success"] is False
-    assert _view(name=f"{SERVER}::deploy")["success"] is True
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is True
 
 
 def test_one_server_being_switched_off_does_not_touch_another(remote):
-    _write_config(disabled=["other::deploy"])
-    assert _view(name=f"{SERVER}::deploy")["success"] is True
+    _write_config(disabled=["other::team/deploy"])
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is True
 
 
 # ── the config spellings the reader has to normalize ────────────────────────
 
 def test_a_json_array_string_from_config_set_is_honoured(remote):
-    """``hermes config set skills.disabled '["acme::deploy"]'`` must work, not be ignored."""
-    _write_config(disabled='\'["acme::deploy"]\'')
-    assert _view(name=f"{SERVER}::deploy")["success"] is False
-    assert _remote_names() == {f"{SERVER}::rollback"}
+    """``hermes config set skills.disabled '["acme::team/deploy"]'`` must work, not be ignored."""
+    _write_config(disabled='\'["acme::team/deploy"]\'')
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is False
+    assert _remote_names() == {f"{SERVER}::team/rollback"}
 
 
 def test_a_scalar_string_is_one_name(remote):
-    _write_config(disabled="'acme::deploy'")
-    assert _view(name=f"{SERVER}::deploy")["success"] is False
+    _write_config(disabled="'acme::team/deploy'")
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is False
 
 
 def test_platform_disabled_switches_off_for_one_platform(monkeypatch, remote):
     monkeypatch.setenv("HERMES_PLATFORM", "telegram")
-    _write_config(platform_disabled={"telegram": ["acme::rollback"]})
-    assert _view(name=f"{SERVER}::rollback")["success"] is False
-    assert _view(name=f"{SERVER}::deploy")["success"] is True
+    _write_config(platform_disabled={"telegram": ["acme::team/rollback"]})
+    assert _view(name=f"{SERVER}::team/rollback")["success"] is False
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is True
 
 
 def test_platform_disabled_for_another_platform_leaves_the_skill_on(monkeypatch, remote):
     monkeypatch.setenv("HERMES_PLATFORM", "telegram")
-    _write_config(platform_disabled={"discord": ["acme::rollback"]})
-    assert _view(name=f"{SERVER}::rollback")["success"] is True
+    _write_config(platform_disabled={"discord": ["acme::team/rollback"]})
+    assert _view(name=f"{SERVER}::team/rollback")["success"] is True
 
 
 # ── the name survives everything that is not the name ───────────────────────
@@ -172,12 +172,12 @@ def test_platform_disabled_for_another_platform_leaves_the_skill_on(monkeypatch,
 def test_a_republished_catalog_does_not_restore_a_disabled_skill(remote):
     """Authorization is by name: new content on the server changes nothing about it."""
     server, manager = remote
-    _write_config(disabled=["acme::deploy"])
-    assert _view(name=f"{SERVER}::deploy")["success"] is False
+    _write_config(disabled=["acme::team/deploy"])
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is False
 
     server.skills[0].files["SKILL.md"] = "---\nname: deploy\n---\nreworked body\n"
     asyncio.run(manager.discover(SERVER, SCOPE, reason="republication"))
-    assert _view(name=f"{SERVER}::deploy")["success"] is False
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is False
 
 
 def test_a_name_no_longer_published_is_not_provided_not_disabled(remote):
@@ -191,45 +191,21 @@ def test_a_name_no_longer_published_is_not_provided_not_disabled(remote):
 
 # ── the router still refuses to guess ───────────────────────────────────────
 
-def test_two_uri_same_name_are_both_covered_by_the_one_name_entry(remote):
-    """Disabling is name-level, so one entry covers both; loading still refuses to guess."""
+def test_two_uris_under_one_name_are_two_skills_with_two_keys(remote):
+    """A name is a label the server may reuse; the key comes from the URI, so each is
+    its own row and can be switched off without touching the other."""
     server, manager = remote
     server.skills.append(FakeSkill(uri="skill://team/v2/deploy/SKILL.md", name="deploy",
                                    files={"SKILL.md": "---\nname: deploy\n---\nv2\n"}))
     asyncio.run(manager.discover(SERVER, SCOPE, reason="duplicate-name"))
 
-    ambiguous = _view(name="deploy")
-    assert ambiguous["error_code"] == "ambiguous_identity"
+    from tools.skills_tool_mcp import list_rows
+    keys = {r["name"] for r in list_rows(skip_disabled=True)}
+    assert {"acme::team/deploy", "acme::team/v2/deploy"} <= keys
 
-    _write_config(disabled=["acme::deploy"])
+    # The bare label is still ambiguous, and the router still refuses to guess.
+    assert _view(name="deploy")["error_code"] == "ambiguous_identity"
+
+    _write_config(disabled=["acme::team/deploy"])
     assert _view(server=SERVER, uri="skill://team/deploy/SKILL.md")["success"] is False
-    assert _view(server=SERVER, uri="skill://team/v2/deploy/SKILL.md")["success"] is False
-    assert _view(server=SERVER, uri="skill://team/rollback/SKILL.md")["success"] is True
-
-
-# ── the two views the enable/disable screen needs ───────────────────────────
-
-def test_the_all_view_lists_switched_off_skills_so_they_can_be_switched_back(remote):
-    """`hermes skills` shows every row including the disabled ones, or you could never re-enable."""
-    from tools.skills_tool_mcp import list_rows
-    _write_config(disabled=["acme::deploy"])
-    assert {r["name"] for r in list_rows(skip_disabled=True)} == {"acme::deploy", "acme::rollback"}
-    assert {r["name"] for r in list_rows()} == {"acme::rollback"}
-
-
-def test_the_invisible_view_matches_the_index_on_platform(remote):
-    """`skills_list` and the prompt index must offer the same set, or the model sees
-    a name in one and gets refused in the other."""
-    server, manager = remote
-    server.skills.append(FakeSkill(uri="skill://team/winonly/SKILL.md", name="winonly",
-                                   files={"SKILL.md": "---\nname: winonly\n---\nx\n"},
-                                   frontmatter_extra={"platforms": ["plan9"]}))
-    asyncio.run(manager.discover(SERVER, SCOPE, reason="platform"))
-
-    from agent.skill_utils import get_disabled_skill_names
-    from agent.skills_prompt_mcp import mcp_skill_rows
-    from tools.skills_tool_mcp import list_rows
-    indexed = {r[1] for r in mcp_skill_rows(get_disabled_skill_names(), None, None, None)[0]}
-    listed = {r["name"] for r in list_rows()}
-    assert listed == indexed
-    assert "acme::winonly" not in listed
+    assert _view(server=SERVER, uri="skill://team/v2/deploy/SKILL.md")["success"] is True

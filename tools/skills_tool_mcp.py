@@ -21,7 +21,8 @@ from typing import Any, Optional
 from typing import TYPE_CHECKING
 
 from agent.skills_contracts import SkillEntry, SkillError, SkillErrorCode, VerifiedRead
-from agent.skills_prompt_mcp import qualified_name, remote_entry_disabled, split_qualified
+from agent.skills_prompt_mcp import (
+    locator_of, qualified_name, remote_entry_disabled, split_qualified)
 
 if TYPE_CHECKING:  # annotations only — the runtime import below is deferred on purpose
     from tools.mcp_skills_manager import SkillsOverMcpManager
@@ -113,17 +114,30 @@ def resolve_entry(name: Optional[str], server: Optional[str], uri: Optional[str]
         raise SkillError(SkillErrorCode.NOT_PROVIDED, "A skill name, or server= with uri=, is required.")
     split = _split_qualified(name)
     if split is not None:
-        label, bare = split
-        matches = manager.find(scope_id, server=label, name=bare)
+        label, locator = split
+        matches = _find_by_locator(manager, scope_id, label, locator)
         if not matches:
             raise SkillError(SkillErrorCode.NOT_PROVIDED,
-                             f"'{bare}' is not provided by MCP server '{label}'.",
-                             available_skills=[e.name for e in manager.find(scope_id, server=label)][:20])
+                             f"'{locator}' is not provided by MCP server '{label}'.",
+                             available_skills=sorted(
+                                 locator_of(e.identity.locator)
+                                 for e in manager.find(scope_id, server=label))[:20])
         return _sole(matches, name)
     matches = manager.find(scope_id, name=name)
     if not matches:
         raise SkillError(SkillErrorCode.NOT_PROVIDED, f"Skill '{name}' was not found in any connected MCP server.")
     return _sole(matches, name)
+
+
+def _find_by_locator(manager: SkillsOverMcpManager, scope_id: str, server: str,
+                     locator: str) -> list[SkillEntry]:
+    """Entries under *server* whose URI locator is *locator*.
+
+    Matched on the URI rather than the frontmatter name: the name is a label the
+    server may reuse, and the qualified key has to name exactly one skill.
+    """
+    return [entry for entry in manager.find(scope_id, server=server)
+            if locator_of(entry.identity.locator) == locator]
 
 
 def _split_qualified(name: str) -> Optional[tuple[str, str]]:
@@ -171,7 +185,7 @@ def _availability_refusal(entry: SkillEntry) -> Optional[str]:
     """
     if unsupported := _platform_refusal(entry):
         return _fail(unsupported, readiness_status="unsupported")
-    if remote_entry_disabled(entry.identity.origin_id, entry.name, _disabled_names()):
+    if remote_entry_disabled(entry.identity.origin_id, entry.identity.locator, _disabled_names()):
         return _fail(f"Skill '{_load_key(entry)}' is disabled. Enable it with `hermes skills`.")
     return None
 
@@ -301,8 +315,12 @@ def _verify_frontmatter(read: VerifiedRead, entry: SkillEntry) -> None:
 
 
 def _load_key(entry: SkillEntry) -> str:
-    """The qualified name this skill is listed and switched on/off by."""
-    return qualified_name(entry.identity.origin_id, entry.name)
+    """The qualified key this skill is listed and switched on/off by.
+
+    Derived from the URI, so it names one skill even when a server publishes two
+    under the same frontmatter name.
+    """
+    return qualified_name(entry.identity.origin_id, entry.identity.locator)
 
 
 def _source(entry: SkillEntry) -> dict[str, Any]:
@@ -355,7 +373,7 @@ def list_rows(scope_id: Optional[str] = None, *, skip_disabled: bool = False) ->
     disabled = set() if skip_disabled else _disabled_names()
     rows: list[dict[str, Any]] = []
     for entry in manager.entries(scope):
-        if remote_entry_disabled(entry.identity.origin_id, entry.name, disabled):
+        if remote_entry_disabled(entry.identity.origin_id, entry.identity.locator, disabled):
             continue
         if _platform_refusal(entry):  # the offer-time gate the index and skill_view share
             continue
@@ -424,18 +442,18 @@ def serve_name_fallback(*, name: str, file_path: Optional[str] = None,
 def mutation_target_is_remote(name: str) -> bool:
     """Whether *name* addresses a remote skill rather than a local/plugin one.
 
-    Requires the ``server::skill`` spelling, the server to be configured for skills,
+    Requires the ``server::locator`` spelling, the server to be configured for skills,
     AND the server to actually publish that skill — a local skill called ``skills/foo``
     (or a plugin named ``skills``) must keep resolving to itself.
     """
     split = split_qualified(name or "")
     if split is None:
         return False
-    server, bare = split
+    server, locator = split
     if server not in known_server_labels():
         return False
     try:
-        return bool(_manager().find(_scope_id(), server=server, name=bare))
+        return bool(_find_by_locator(_manager(), _scope_id(), server, locator))
     except Exception:
         logger.debug("Could not check remote ownership of %r", name, exc_info=True)
         return False
