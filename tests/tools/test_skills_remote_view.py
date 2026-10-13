@@ -62,9 +62,9 @@ def _view(**kwargs) -> dict:
 # ── locators ────────────────────────────────────────────────────────────────
 
 def test_a_qualified_name_loads_the_remote_skill(remote):
-    result = _view(name=f"{SERVER}::deploy")
+    result = _view(name=f"{SERVER}::team/deploy")
     assert result["success"] is True
-    assert result["name"] == f"{SERVER}::deploy"
+    assert result["name"] == f"{SERVER}::team/deploy"
     assert result["content"].endswith("run the deploy\n")
     assert result["verified"] is True
     assert result["source"] == {"backend": "mcp", "server": SERVER,
@@ -105,7 +105,7 @@ def test_an_empty_call_is_told_how_to_locate_something():
 def test_a_bare_name_found_on_exactly_one_remote_server_resolves(remote):
     result = _view(name="rollback")
     assert result["success"] is True
-    assert result["name"] == f"{SERVER}::rollback"
+    assert result["name"] == f"{SERVER}::team/rollback"
 
 
 def test_a_bare_name_two_servers_both_offer_is_refused_with_candidates(remote):
@@ -162,7 +162,7 @@ def test_a_locally_colliding_name_is_not_papered_over_by_a_remote_match(remote):
 def test_an_opted_in_server_loads_without_a_separate_approval(remote):
     """The whole path: enabling the server is the consent, and a load just works."""
     _server, manager = remote
-    result = _view(name=f"{SERVER}::deploy")
+    result = _view(name=f"{SERVER}::team/deploy")
     assert result["success"] is True
     assert result["verified"] is True
     assert manager.instance_view(SERVER, SCOPE).support.value == "supported"
@@ -171,15 +171,15 @@ def test_an_opted_in_server_loads_without_a_separate_approval(remote):
 def test_no_approval_record_is_consulted_or_written(remote, tmp_path):
     """Nothing in the load path persists a per-skill decision any more."""
     _server, _manager = remote
-    _view(name=f"{SERVER}::deploy")
+    _view(name=f"{SERVER}::team/deploy")
     assert not list(tmp_path.glob("*approval*")), "the load path must not create approval state"
 
 
 def test_a_disabled_skill_is_refused_before_any_read(remote, monkeypatch):
     server, _manager = remote
-    monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda *a, **k: {f"{SERVER}::deploy"})
+    monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda *a, **k: {f"{SERVER}::team/deploy"})
     before = server.calls.count("resources/read")
-    result = _view(name=f"{SERVER}::deploy")
+    result = _view(name=f"{SERVER}::team/deploy")
     assert result["success"] is False
     assert "disabled" in result["error"]
     assert server.calls.count("resources/read") == before, "a switched-off skill must not fetch a body"
@@ -188,7 +188,7 @@ def test_a_disabled_skill_is_refused_before_any_read(remote, monkeypatch):
 def test_a_disabled_skill_is_refused_through_a_structured_locator_too(remote, monkeypatch):
     """A direct URI must not be a way around the enable/disable list."""
     _server, _manager = remote
-    monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda *a, **k: {f"{SERVER}::deploy"})
+    monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda *a, **k: {f"{SERVER}::team/deploy"})
     result = _view(server=SERVER, uri="skill://team/deploy/SKILL.md")
     assert result["success"] is False
     assert "disabled" in result["error"]
@@ -196,21 +196,21 @@ def test_a_disabled_skill_is_refused_through_a_structured_locator_too(remote, mo
 
 def test_a_disabled_skill_is_absent_from_the_listing_and_the_index(remote, monkeypatch):
     _server, _manager = remote
-    monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda *a, **k: {f"{SERVER}::deploy"})
+    monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda *a, **k: {f"{SERVER}::team/deploy"})
     listing = json.loads(skills_tool.skills_list())
     names = {s["name"] for s in listing["skills"] if s.get("source", {}).get("remote")}
-    assert names == {f"{SERVER}::rollback"}
+    assert names == {f"{SERVER}::team/rollback"}
 
     from agent.skills_prompt_mcp import mcp_skill_rows
-    rows, _token = mcp_skill_rows({f"{SERVER}::deploy"}, None, None, None)
-    assert {r[1] for r in rows} == {f"{SERVER}::rollback"}
+    rows, _token = mcp_skill_rows({f"{SERVER}::team/deploy"}, None, None, None)
+    assert {r[1] for r in rows} == {f"{SERVER}::team/rollback"}
 
 
 def test_the_bare_name_does_not_switch_off_a_remote_skill(remote, monkeypatch):
     """A `skills.disabled` entry written for a local skill must not reach a remote one."""
     _server, _manager = remote
     monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda *a, **k: {"deploy"})
-    assert _view(name=f"{SERVER}::deploy")["success"] is True
+    assert _view(name=f"{SERVER}::team/deploy")["success"] is True
 
 
 # ── attachments ─────────────────────────────────────────────────────────────
@@ -256,9 +256,9 @@ def test_attachment_bytes_that_no_longer_match_retire_the_catalog(remote):
 # ── repeats and platform ────────────────────────────────────────────────────
 
 def test_a_repeat_view_of_the_same_revision_is_deduped(remote):
-    first = _view(name=f"{SERVER}::deploy")
+    first = _view(name=f"{SERVER}::team/deploy")
     assert first["success"] is True
-    again = _view(name=f"{SERVER}::deploy")
+    again = _view(name=f"{SERVER}::team/deploy")
     assert again.get("dedup") is True and again.get("content_returned") is False
 
 
@@ -270,7 +270,7 @@ def test_a_platform_mismatched_remote_skill_is_refused_on_load(remote):
     import asyncio
     asyncio.run(manager.discover(SERVER, SCOPE, reason="test"))
 
-    result = _view(name=f"{SERVER}::linuxonly")
+    result = _view(name=f"{SERVER}::team/linuxonly")
     assert result["success"] is False
     assert result["readiness_status"] == "unsupported"
 
@@ -280,14 +280,14 @@ def test_a_platform_mismatched_remote_skill_is_refused_on_load(remote):
 def test_skills_list_carries_the_identity_of_every_remote_skill(remote):
     listing = json.loads(skills_tool.skills_list())
     rows = [s for s in listing["skills"] if s.get("source", {}).get("remote")]
-    assert {r["name"] for r in rows} == {f"{SERVER}::deploy", f"{SERVER}::rollback"}
+    assert {r["name"] for r in rows} == {f"{SERVER}::team/deploy", f"{SERVER}::team/rollback"}
     assert all(r["server"] == SERVER and r["uri"].endswith("SKILL.md") for r in rows)
 
 
 def test_the_index_projects_remote_skills_under_a_qualified_key(remote):
     from agent.skills_prompt_mcp import mcp_skill_rows
     rows, token = mcp_skill_rows(set(), {"skill_view"}, {"skills"}, None)
-    assert {(r[1]) for r in rows} == {f"{SERVER}::deploy", f"{SERVER}::rollback"}
+    assert {(r[1]) for r in rows} == {f"{SERVER}::team/deploy", f"{SERVER}::team/rollback"}
     assert all(r[0] == f"mcp/{SERVER}" for r in rows)
     assert token == ((SERVER, 1),), "the projection re-renders when the revision moves"
 
@@ -301,18 +301,18 @@ def test_the_index_hides_platform_mismatched_remote_skills(remote):
     asyncio.run(manager.discover(SERVER, SCOPE, reason="test"))
     from agent.skills_prompt_mcp import mcp_skill_rows
     rows, _token = mcp_skill_rows(set(), None, None, None)
-    assert f"{SERVER}::linuxonly" not in {r[1] for r in rows}, "the offer gate withholds it"
+    assert f"{SERVER}::team/linuxonly" not in {r[1] for r in rows}, "the offer gate withholds it"
 
 
 def test_a_disabled_remote_skill_is_not_projected(remote):
     from agent.skills_prompt_mcp import mcp_skill_rows
-    rows, _token = mcp_skill_rows({f"{SERVER}::deploy"}, None, None, None)
-    assert {r[1] for r in rows} == {f"{SERVER}::rollback"}
+    rows, _token = mcp_skill_rows({f"{SERVER}::team/deploy"}, None, None, None)
+    assert {r[1] for r in rows} == {f"{SERVER}::team/rollback"}
 
 
 def test_skill_manage_refuses_to_mutate_a_remote_skill(remote):
     from tools.skill_manager_tool import skill_manage
-    result = json.loads(skill_manage(action="patch", name=f"{SERVER}::deploy",
+    result = json.loads(skill_manage(action="patch", name=f"{SERVER}::team/deploy",
                                      old_string="undo", new_string="redo"))
     assert result["success"] is False
     assert result["error_code"] == "mutation_unsupported"
