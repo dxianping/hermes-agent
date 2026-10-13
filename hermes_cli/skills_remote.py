@@ -11,16 +11,11 @@ list, which is what the operator came for.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
-
-from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
-CONNECTING_NOTICE = "Connecting to MCP servers that publish skills…"
 
-
-def remote_skill_rows(*, notice: Optional[Callable[[str], None]] = None) -> list[dict]:
+def remote_skill_rows() -> list[dict]:
     """Every published remote skill this profile may load, marked ``remote``.
 
     Includes the switched-off ones: both surfaces that call this are places where a
@@ -35,16 +30,11 @@ def remote_skill_rows(*, notice: Optional[Callable[[str], None]] = None) -> list
         if not servers:
             return []
         if not list_rows(skip_disabled=True):
-            (notice or _print_notice)(CONNECTING_NOTICE)
             _connect_servers(servers)
         return [dict(row, remote=True) for row in list_rows(skip_disabled=True)]
     except Exception:
         logger.warning("Remote skills could not be listed", exc_info=True)
         return []
-
-
-def _print_notice(message: str) -> None:
-    print(color(f"  {message}", Colors.DIM))
 
 
 def _connect_servers(servers: list[str]) -> None:
