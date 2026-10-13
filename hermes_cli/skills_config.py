@@ -69,44 +69,9 @@ def _list_all_skills() -> list[dict]:
         skills = find_all_skills(skip_disabled=True)
     except Exception:
         skills = []
-    skills.extend(_remote_skills())
+    from hermes_cli.skills_remote import remote_skill_rows
+    skills.extend(remote_skill_rows())
     return skills
-
-
-def _remote_skills() -> list[dict]:
-    """Skills the profile's MCP servers publish, or ``[]`` when none can be listed.
-
-    A config command opens no MCP connection of its own, so the catalog is fetched
-    here — and only for the servers that opted in to publishing skills. Anything that
-    goes wrong costs these rows alone: the on-disk skills still list.
-    """
-    try:
-        from tools.skills_tool_mcp import known_server_labels, list_rows
-    except ImportError:  # `mcp` is an optional extra; the CLI works without it
-        return []
-    try:
-        servers = sorted(known_server_labels())
-        if not servers:
-            return []
-        if not list_rows(skip_disabled=True):
-            print(color("  Connecting to MCP servers that publish skills…", Colors.DIM))
-            _connect_skills_servers(servers)
-        return list_rows(skip_disabled=True)
-    except Exception:
-        logger.warning("Remote skills could not be listed for `hermes skills`", exc_info=True)
-        return []
-
-
-def _connect_skills_servers(servers: list[str]) -> None:
-    """Connect just *servers*, without letting OAuth read from this command's stdin."""
-    try:
-        from tools.mcp_oauth import suppress_interactive_oauth
-    except ImportError:
-        from contextlib import nullcontext as suppress_interactive_oauth
-    from tools.mcp_tool_discovery import discover_mcp_tools
-
-    with suppress_interactive_oauth():
-        discover_mcp_tools(allowed_mcp_names=servers)
 
 
 def _get_categories(skills: list[dict]) -> list[str]:
