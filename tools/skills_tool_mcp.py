@@ -338,24 +338,26 @@ def _declared_requirements(entry: SkillEntry) -> dict[str, Any]:
     return payload
 
 
-def list_rows(scope_id: Optional[str] = None) -> list[dict[str, Any]]:
-    """``skills_list`` rows for every published remote skill this profile has enabled.
+def list_rows(scope_id: Optional[str] = None, *, skip_disabled: bool = False) -> list[dict[str, Any]]:
+    """Rows for every published remote skill: identity, description, and where it lives.
 
     ``name`` is the qualified load key — the same string ``skill_view`` resolves and
     the same one the enable/disable list names this skill by, so a caller can feed it
     straight back into either. ``server``/``uri`` are carried separately for callers
     that would rather locate explicitly; they locate, they do not authorize.
 
-    Only the model-facing listing is served here. Remote skills are deliberately NOT
-    merged into ``_find_all_skills`` yet, so `hermes skills` and the desktop panel do
-    not offer them until that surface is built (design doc §10 step 2, deferred).
+    ``skip_disabled`` mirrors the on-disk catalog's flag: the enable/disable UI lists
+    everything, including what is switched off, while the model-facing listing shows
+    only what this profile may actually load right now.
     """
     manager = _manager()
     scope = scope_id if scope_id is not None else _scope_id()
-    disabled = _disabled_names()
+    disabled = set() if skip_disabled else _disabled_names()
     rows: list[dict[str, Any]] = []
     for entry in manager.entries(scope):
         if remote_entry_disabled(entry.identity.origin_id, entry.name, disabled):
+            continue
+        if _platform_refusal(entry):  # the offer-time gate the index and skill_view share
             continue
         rows.append({
             "name": _load_key(entry),

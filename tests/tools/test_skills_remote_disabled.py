@@ -205,3 +205,31 @@ def test_two_uri_same_name_are_both_covered_by_the_one_name_entry(remote):
     assert _view(server=SERVER, uri="skill://team/deploy/SKILL.md")["success"] is False
     assert _view(server=SERVER, uri="skill://team/v2/deploy/SKILL.md")["success"] is False
     assert _view(server=SERVER, uri="skill://team/rollback/SKILL.md")["success"] is True
+
+
+# ── the two views the enable/disable screen needs ───────────────────────────
+
+def test_the_all_view_lists_switched_off_skills_so_they_can_be_switched_back(remote):
+    """`hermes skills` shows every row including the disabled ones, or you could never re-enable."""
+    from tools.skills_tool_mcp import list_rows
+    _write_config(disabled=["acme::deploy"])
+    assert {r["name"] for r in list_rows(skip_disabled=True)} == {"acme::deploy", "acme::rollback"}
+    assert {r["name"] for r in list_rows()} == {"acme::rollback"}
+
+
+def test_the_invisible_view_matches_the_index_on_platform(remote):
+    """`skills_list` and the prompt index must offer the same set, or the model sees
+    a name in one and gets refused in the other."""
+    server, manager = remote
+    server.skills.append(FakeSkill(uri="skill://team/winonly/SKILL.md", name="winonly",
+                                   files={"SKILL.md": "---\nname: winonly\n---\nx\n"},
+                                   frontmatter_extra={"platforms": ["plan9"]}))
+    asyncio.run(manager.discover(SERVER, SCOPE, reason="platform"))
+
+    from agent.skill_utils import get_disabled_skill_names
+    from agent.skills_prompt_mcp import mcp_skill_rows
+    from tools.skills_tool_mcp import list_rows
+    indexed = {r[1] for r in mcp_skill_rows(get_disabled_skill_names(), None, None, None)[0]}
+    listed = {r["name"] for r in list_rows()}
+    assert listed == indexed
+    assert "acme::winonly" not in listed
