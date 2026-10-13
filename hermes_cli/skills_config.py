@@ -1,4 +1,5 @@
 """Skills configuration for Hermes Agent. `hermes skills` enters this module."""
+import logging
 from typing import List, Optional, Set
 
 from hermes_cli.config import cfg_get, load_config, save_config
@@ -7,6 +8,8 @@ from hermes_cli.platforms import PLATFORMS as _PLATFORMS
 
 # {key: label} view of the messaging platforms (``PLATFORMS.items()`` / ``.get(key)`` below).
 PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server"}
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_skill_names(values) -> set[str]:
@@ -55,12 +58,55 @@ def save_disabled_skills(config: dict, disabled: set[str], platform: Optional[st
 
 
 def _list_all_skills() -> list[dict]:
-    """Return all installed skills (ignoring disabled state)."""
+    """Return all installed skills (ignoring disabled state), on-disk and remote.
+
+    ``skills.disabled`` is a list of names and a remote skill's name is its qualified
+    ``server::skill`` key, so listing them here is what makes the same toggle work for
+    both sources.
+    """
     try:
         from tools.skills_tool import find_all_skills
-        return find_all_skills(skip_disabled=True)
+        skills = find_all_skills(skip_disabled=True)
     except Exception:
+        skills = []
+    skills.extend(_remote_skills())
+    return skills
+
+
+def _remote_skills() -> list[dict]:
+    """Skills the profile's MCP servers publish, or ``[]`` when none can be listed.
+
+    A config command opens no MCP connection of its own, so the catalog is fetched
+    here — and only for the servers that opted in to publishing skills. Anything that
+    goes wrong costs these rows alone: the on-disk skills still list.
+    """
+    try:
+        from tools.skills_tool_mcp import known_server_labels, list_rows
+    except ImportError:  # `mcp` is an optional extra; the CLI works without it
         return []
+    try:
+        servers = sorted(known_server_labels())
+        if not servers:
+            return []
+        if not list_rows(skip_disabled=True):
+            print(color("  Connecting to MCP servers that publish skills…", Colors.DIM))
+            _connect_skills_servers(servers)
+        return list_rows(skip_disabled=True)
+    except Exception:
+        logger.warning("Remote skills could not be listed for `hermes skills`", exc_info=True)
+        return []
+
+
+def _connect_skills_servers(servers: list[str]) -> None:
+    """Connect just *servers*, without letting OAuth read from this command's stdin."""
+    try:
+        from tools.mcp_oauth import suppress_interactive_oauth
+    except ImportError:
+        from contextlib import nullcontext as suppress_interactive_oauth
+    from tools.mcp_tool_discovery import discover_mcp_tools
+
+    with suppress_interactive_oauth():
+        discover_mcp_tools(allowed_mcp_names=servers)
 
 
 def _get_categories(skills: list[dict]) -> list[str]:
@@ -110,6 +156,18 @@ def _toggle_by_category(skills: list[dict], disabled: set[str]) -> set[str]:
     return new_disabled
 
 
+def _disabled_after_selection(skills: list[dict], disabled: set[str], chosen: set[int]) -> set[str]:
+    """The disable list after a checkbox pass: recomputed for the rows shown, only.
+
+    An entry whose skill is not among *skills* — a plugin's ``plugin:skill``, or a
+    remote skill whose server is not connected right now — is carried over untouched.
+    Rebuilding the whole set from the visible rows would switch those back on behind
+    the operator's back, which is the one outcome this screen must never produce.
+    """
+    shown = {s["name"] for s in skills}
+    return (disabled - shown) | {skills[i]["name"] for i in range(len(skills)) if i not in chosen}
+
+
 def skills_command(args=None):
     """Entry point for `hermes skills`."""
     from hermes_cli.curses_ui import curses_checklist
@@ -142,7 +200,7 @@ def skills_command(args=None):
         pre_selected = {i for i, s in enumerate(skills) if s["name"] not in disabled}
         chosen = curses_checklist(f"Skills for {platform_label}",
                                   labels, pre_selected, cancel_returns=pre_selected)
-        new_disabled = {skills[i]["name"] for i in range(len(skills)) if i not in chosen}
+        new_disabled = _disabled_after_selection(skills, disabled, chosen)
 
     if new_disabled == disabled:
         print(color("  No changes.", Colors.DIM))
