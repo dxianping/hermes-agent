@@ -103,6 +103,9 @@ class _Instance:
     directory_read: bool = False
     protocol_version: str = ""
     session_token: Any = None
+    transport: Any = None
+    refresh_pending: bool = False
+    refresh_task: Any = None
     generation: int = 0
     snapshot: Optional[CatalogSnapshot] = None
     catalog_state: CatalogState = CatalogState.ABSENT
@@ -141,17 +144,22 @@ class _McpSender:
 
     async def send(self, server_name: str, op: str, request: Any, result_type: Any, timeout: float) -> Any:
         from tools.mcp_tool_discovery import _get_connected_server_for_call
-        from tools.mcp_tool_handlers import _track_inflight_rpc
 
         server = _get_connected_server_for_call(server_name)
         if server is None or getattr(server, "session", None) is None:
             raise SkillError(SkillErrorCode.UNAVAILABLE, f"MCP server '{server_name}' is not connected")
-        async with _track_inflight_rpc(server, server_name, op, retry_safe=True):
+        return await self.send_to(server, op, request, result_type, timeout)
+
+    async def send_to(self, server: Any, op: str, request: Any, result_type: Any,
+                      timeout: float, session_token: Any = None) -> Any:
+        from tools.mcp_tool_handlers import _track_inflight_rpc
+
+        async with _track_inflight_rpc(server, server.name, op, retry_safe=True):
             async with server._rpc_lock:
                 session = getattr(server, "session", None)
-                if session is None:
+                if session is None or (session_token is not None and id(session) != session_token):
                     raise SkillError(SkillErrorCode.UNAVAILABLE,
-                                     f"MCP server '{server_name}' disconnected before {op}")
+                                     f"MCP server '{server.name}' disconnected before {op}")
                 return await session.send_request(request, result_type,
                                                   request_read_timeout_seconds=timeout)
 
@@ -231,6 +239,17 @@ class SkillsOverMcpManager:
             inst.snapshot = None
         return inst.view(transport_state)
 
+    def has_session(self, server_name: str, scope_id: str) -> bool:
+        """Whether this instance holds a connection a catalog read may go through.
+
+        The manager's own view, not the transport ledger's: only an observed session has a
+        catalog published against it, so a surface that wants to re-read one asks here
+        rather than opening its own route to the server.
+        """
+        with self._lock:
+            inst = self._instances.get((scope_id, server_name))
+        return inst is not None and inst.session_token is not None
+
     def instance_view(self, server_name: str, scope_id: str) -> Optional[InstanceView]:
         with self._lock:
             inst = self._instances.get((scope_id, server_name))
@@ -263,18 +282,15 @@ class SkillsOverMcpManager:
         return rows
 
     def request_refresh(self, server_name: str, scope_id: str, *, reason: str = "stale",
-                        min_interval: float = MIN_REFRESH_INTERVAL_SECONDS) -> bool:
-        """Schedule a background catalog refresh for one instance; False when one is not due.
-
-        Debounced on the *attempt* clock rather than on success, so a server that
-        publishes a zero TTL and then fails cannot turn every prompt build into a retry
-        storm. Fire-and-forget by necessity: the caller is a prompt build, and a prompt
-        build must never wait on the network for metadata it can do without.
-        """
+                        min_interval: float = MIN_REFRESH_INTERVAL_SECONDS,
+                        defer: bool = False) -> bool:
+        """Schedule metadata work; notifications retain a debounced trailing refresh."""
         inst = self._instance(server_name, scope_id)
         with self._lock:
             now = time.monotonic()
-            if inst.refreshing or (now - inst.last_refresh_attempt) < min_interval:
+            if defer:
+                inst.refresh_pending = True
+            if inst.refreshing or (not defer and (now - inst.last_refresh_attempt) < min_interval):
                 return False
             inst.refreshing = True
         loop = _mcp_loop()
@@ -282,20 +298,34 @@ class SkillsOverMcpManager:
             inst.refreshing = False
             return False
         try:
-            asyncio.run_coroutine_threadsafe(self._refresh_in_background(inst, reason), loop)
+            inst.refresh_task = asyncio.run_coroutine_threadsafe(
+                self._refresh_in_background(inst, reason, min_interval), loop)
         except (RuntimeError, ValueError) as exc:
             inst.refreshing = False
             logger.debug("Could not schedule a skills refresh for '%s': %s", server_name, exc)
             return False
         return True
 
-    async def _refresh_in_background(self, inst: _Instance, reason: str) -> None:
+    async def _refresh_in_background(self, inst: _Instance, reason: str, min_interval: float) -> None:
+        generation = inst.generation
         try:
-            await self.discover(inst.server_name, inst.scope_id, reason=reason)
+            while generation == inst.generation:
+                delay = min_interval - (time.monotonic() - inst.last_refresh_attempt)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                if generation != inst.generation:
+                    return
+                inst.refresh_pending = False
+                await self.discover(inst.server_name, inst.scope_id, reason=reason)
+                if not inst.refresh_pending:
+                    return
         except SkillError:
-            pass  # discover already logged it; the debounce clock governs the next attempt
+            pass  # discover logged it; the attempt clock governs the next retry
         finally:
             inst.refreshing = False
+            if inst.refresh_pending and inst.session_token is not None:
+                self.request_refresh(inst.server_name, inst.scope_id, reason=reason,
+                                     min_interval=min_interval, defer=True)
 
     def mark_disconnected(self, server_name: str, scope_id: str, reason: str = "") -> None:
         """Drop the catalog when the transport is confirmed gone.
@@ -308,6 +338,14 @@ class SkillsOverMcpManager:
             inst = self._instances.get((scope_id, server_name))
             if inst is None:
                 return
+            if inst.session_token is None and inst.snapshot is None:
+                return
+            inst.generation += 1
+            inst.session_token = None
+            inst.refresh_pending = False
+            if inst.refresh_task is not None:
+                inst.refresh_task.cancel()
+                inst.refresh_task = None
             inst.snapshot = None
             inst.catalog_state = CatalogState.ABSENT
             inst.last_error = reason or "connection lost"
@@ -331,6 +369,9 @@ class SkillsOverMcpManager:
             raise SkillError(SkillErrorCode.UNSUPPORTED_EXTENSION,
                              f"MCP server '{inst.server_name}' does not serve the skills extension "
                              f"({inst.support_reason or inst.support.value})")
+        if inst.session_token is None:
+            raise SkillError(SkillErrorCode.UNAVAILABLE,
+                             f"MCP server '{inst.server_name}' is not connected")
         generation = inst.generation
         inst.catalog_state = CatalogState.LOADING
         inst.last_refresh_attempt = time.monotonic()
@@ -338,6 +379,8 @@ class SkillsOverMcpManager:
         try:
             entries, diagnostics, ttl_ms = await self._list_all(inst)
         except SkillError as exc:
+            if generation != inst.generation:
+                raise
             inst.catalog_state = (CatalogState.REFRESH_FAILED if inst.snapshot is not None else CatalogState.ABSENT)
             inst.last_error = exc.message
             if inst.snapshot is not None:
@@ -369,6 +412,7 @@ class SkillsOverMcpManager:
 
     async def _list_all(self, inst: _Instance) -> tuple[list[SkillEntry], str, Optional[float]]:
         """Follow ``nextCursor`` to the end, quarantining entries that fail validation."""
+        generation = inst.generation
         seen_cursors: set[str] = set()
         cursor: Optional[str] = None
         entries: list[SkillEntry] = []
@@ -379,6 +423,9 @@ class SkillsOverMcpManager:
                 inst, proto.METHOD_LIST,
                 proto.SkillsListRequest(params=proto.SkillsListParams(cursor=cursor)),
                 proto.SkillsListResult)
+            if generation != inst.generation:
+                raise SkillError(SkillErrorCode.VERSION_CHANGED,
+                                 f"MCP server '{inst.server_name}' reconnected during pagination")
             if page == 0:
                 ttl_ms = _read_ttl_ms(result)
             for raw in result.skills:
@@ -534,7 +581,13 @@ class SkillsOverMcpManager:
                          timeout: float = METADATA_TIMEOUT_SECONDS) -> Any:
         """One request awaited on the MCP loop. Read-only ops only — never records a breaker outcome."""
         try:
-            return await self._sender_for(inst).send(inst.server_name, op, request, result_type, timeout)
+            sender = self._sender_for(inst)
+            if isinstance(sender, _McpSender) and inst.transport is not None:
+                if inst.session_token is None:
+                    raise SkillError(SkillErrorCode.UNAVAILABLE,
+                                     f"MCP server '{inst.server_name}' is not connected")
+                return await sender.send_to(inst.transport, op, request, result_type, timeout, inst.session_token)
+            return await sender.send(inst.server_name, op, request, result_type, timeout)
         except SkillError:
             raise
         except Exception as exc:
@@ -543,7 +596,13 @@ class SkillsOverMcpManager:
     def _rpc_sync(self, inst: _Instance, op: str, request: Any, result_type: Any,
                   timeout: float = METADATA_TIMEOUT_SECONDS) -> Any:
         try:
-            return self._sender_for(inst).send_sync(inst.server_name, op, request, result_type, timeout)
+            sender = self._sender_for(inst)
+            if isinstance(sender, _McpSender) and inst.transport is not None:
+                from tools.mcp_tool_loop import _run_on_mcp_loop
+                return _run_on_mcp_loop(
+                    lambda: self._rpc_async(inst, op, request, result_type, timeout),
+                    timeout=timeout + _BRIDGE_HEADROOM_SECONDS)
+            return sender.send_sync(inst.server_name, op, request, result_type, timeout)
         except SkillError:
             raise
         except Exception as exc:
@@ -678,7 +737,8 @@ def current_scope_id() -> str:
         return ""
 
 
-async def publish_catalog_after_connect(server_name: str, config: Any, server: Any) -> None:
+async def publish_catalog_after_connect(server_name: str, config: Any, server: Any,
+                                        *, scope_id: Optional[str] = None) -> None:
     """Build the skills catalog for one opted-in server as part of its connect pass.
 
     Awaited for at most ``INITIAL_PRELOAD_BUDGET_SECONDS`` so the first session
@@ -691,10 +751,15 @@ async def publish_catalog_after_connect(server_name: str, config: Any, server: A
     if not mcp_server_skills_enabled(config):
         return
     manager = get_manager()
-    scope_id = current_scope_id()
+    scope_id = current_scope_id() if scope_id is None else scope_id
+    inst = manager._instance(server_name, scope_id)
+    session = getattr(server, "session", None)
+    if inst.session_token == id(session) and inst.snapshot is not None:
+        return  # initial registration may follow the transport's own publish
+    inst.transport = server
     view = manager.observe_connection(server_name, scope_id,
                                       initialize_result=getattr(server, "initialize_result", None),
-                                      session=getattr(server, "session", None))
+                                      session=session)
     if view.support is not SkillsSupport.SUPPORTED:
         logger.info("MCP server '%s': skills channel not enabled (%s)", server_name, view.support_reason)
         return
