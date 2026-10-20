@@ -23,10 +23,16 @@ def stub_remote(monkeypatch):
     """Drive the remote half of ``_list_all_skills`` without a live server."""
     from tools import skills_tool_mcp
 
-    state = {"rows": list(REMOTE), "servers": {"acme"}, "discovered": []}
+    state = {"rows": list(REMOTE), "servers": {"acme"}, "discovered": [], "problems": [],
+             "verified": None}
     monkeypatch.setattr(skills_tool_mcp, "known_server_labels", lambda: set(state["servers"]))
     monkeypatch.setattr(skills_tool_mcp, "list_rows",
                         lambda *a, **k: list(state["rows"]) if state["rows"] else [])
+    # The listing path re-reads the servers first and shows a server's rows only when it
+    # answered; the picker path reads the held catalog. Stub both so each test drives one.
+    monkeypatch.setattr(skills_tool_mcp, "refresh_catalogs",
+                        lambda **k: (sorted(state["servers"]) if state["verified"] is None
+                                     else list(state["verified"]), list(state["problems"])))
     return state
 
 
@@ -58,20 +64,22 @@ def test_a_server_that_is_not_connected_leaves_the_local_listing_intact(monkeypa
 
 
 def test_no_opted_in_server_means_no_connection_attempt(monkeypatch, stub_remote):
+    from tools import skills_tool_mcp
     _patch_local(monkeypatch)
     stub_remote["servers"] = set()
     stub_remote["rows"] = []
     called = []
-    monkeypatch.setattr(skills_remote, "_connect_servers", lambda s: called.append(s))
+    monkeypatch.setattr(skills_tool_mcp, "_connect_servers", lambda s: called.append(s))
     assert [s["name"] for s in skills_config._list_all_skills()] == ["deploy"]
     assert called == []
 
 
 def test_an_empty_catalog_connects_once_to_the_opted_in_servers(monkeypatch, stub_remote):
+    from tools import skills_tool_mcp
     _patch_local(monkeypatch)
     stub_remote["rows"] = []
     called = []
-    monkeypatch.setattr(skills_remote, "_connect_servers", lambda s: called.append(s))
+    monkeypatch.setattr(skills_tool_mcp, "_connect_servers", lambda s: called.append(s))
     skills_config._list_all_skills()
     assert called == [["acme"]], "only the servers that publish skills are contacted"
 
@@ -161,3 +169,63 @@ def test_source_mcp_selects_only_the_remote_rows(monkeypatch, stub_remote):
     out = console.file.getvalue()
     assert "acme::team/jira" in out, out
     assert "deploy" not in out, out
+
+
+def test_do_list_hides_a_server_it_could_not_read(monkeypatch, stub_remote):
+    """The reported bug: the last snapshot kept being listed after its server stopped answering."""
+    import io
+
+    from rich.console import Console
+
+    from hermes_cli import skills_hub
+
+    from tools import skills_tool
+
+    monkeypatch.setattr(skills_tool, "_skill_catalog", lambda **k: [
+        {"name": "deploy", "load_name": "deploy", "description": "local deploy",
+         "category": "general", "tier": "local"}])
+    stub_remote["verified"] = []
+    stub_remote["problems"] = [{"server": "acme", "error": "no live connection"}]
+    console = Console(file=io.StringIO(), width=200)
+    skills_hub.do_list(console=console)
+    out = console.file.getvalue()
+    assert "acme::team/jira" not in out, out
+    assert "deploy" in out, "the on-disk skills are not the remote server's to hide"
+    assert "no live connection" in out, "an unreadable server is said out loud, not silently dropped"
+    assert "1 remote" not in out, out
+
+
+def test_do_list_keeps_the_servers_that_did_answer(monkeypatch, stub_remote):
+    import io
+
+    from rich.console import Console
+
+    from hermes_cli import skills_hub
+
+    stub_remote["rows"] = list(REMOTE) + [{"name": "other::team/wiki", "description": "remote wiki",
+                                           "category": "mcp/other", "server": "other",
+                                           "uri": "skill://team/wiki/SKILL.md",
+                                           "source": {"backend": "mcp", "remote": True}}]
+    stub_remote["servers"] = {"acme", "other"}
+    stub_remote["verified"] = ["other"]
+    stub_remote["problems"] = [{"server": "acme", "error": "no live connection"}]
+    console = Console(file=io.StringIO(), width=200)
+    skills_hub.do_list(console=console)
+    out = console.file.getvalue()
+    assert "other::team/wiki" in out, out
+    assert "acme::team/jira" not in out, out
+    assert "1 remote" in out, out
+
+
+def test_do_list_says_nothing_extra_when_every_server_answered(monkeypatch, stub_remote):
+    import io
+
+    from rich.console import Console
+
+    from hermes_cli import skills_hub
+
+    console = Console(file=io.StringIO(), width=200)
+    skills_hub.do_list(console=console)
+    out = console.file.getvalue()
+    assert "acme::team/jira" in out, out
+    assert "could not be read" not in out, out

@@ -289,7 +289,11 @@ def test_the_index_projects_remote_skills_under_a_qualified_key(remote):
     rows, token = mcp_skill_rows(set(), {"skill_view"}, {"skills"}, None)
     assert {(r[1]) for r in rows} == {f"{SERVER}::team/deploy", f"{SERVER}::team/rollback"}
     assert all(r[0] == f"mcp/{SERVER}" for r in rows)
-    assert token == ((SERVER, 1),), "the projection re-renders when the revision moves"
+    import asyncio
+    _server, manager = remote
+    asyncio.run(manager.discover(SERVER, SCOPE))
+    _, refreshed_token = mcp_skill_rows(set(), {"skill_view"}, {"skills"}, None)
+    assert refreshed_token != token, "a republish invalidates the rendered index"
 
 
 def test_the_index_hides_platform_mismatched_remote_skills(remote):

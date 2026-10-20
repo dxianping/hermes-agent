@@ -86,10 +86,8 @@ def mcp_skill_rows(disabled: set[str], available_tools: Optional[set[str]],
                    session_platform: Optional[str]) -> tuple[list[tuple[str, str, str]], tuple]:
     """``([(category, qualified_name, description)], cache_token)`` for every published remote skill.
 
-    The cache token is the set of ``(server, snapshot_revision)`` pairs, so the
-    rendered-index LRU is invalidated by a catalog republish — otherwise a session
-    would keep serving the index built before the server's skills changed, which is
-    the whole failure mode this feature exists to remove.
+    The cache token includes the scope, server, connection generation and revision:
+    a reconnect may restart revisions at one, but must never reuse the old index.
 
     Never raises: a prompt build must not fail because an optional remote catalog
     is in an odd state, and a missing catalog is simply no rows.
@@ -111,14 +109,15 @@ def mcp_skill_rows(disabled: set[str], available_tools: Optional[set[str]],
         return [], ()
 
     rows: list[tuple[str, str, str]] = []
-    token: list[tuple[str, int]] = []
+    token: list[tuple[str, str, int, int]] = []
     for snapshot in sorted(snapshots, key=lambda s: s.origin_id):
         if not snapshot.is_fresh():
             # Past its TTL the metadata still routes (the rows below are served), but the
             # host stops claiming it is current — so ask for a refresh on the way past.
             # Debounced inside the manager; a prompt build never waits for the result.
             manager.request_refresh(snapshot.origin_id, scope_id, reason="stale-metadata")
-        token.append((snapshot.origin_id, snapshot.snapshot_revision))
+        token.append((snapshot.scope_id, snapshot.origin_id, snapshot.connection_generation,
+                      snapshot.snapshot_revision))
         for entry in sorted(snapshot.entries.values(),
                             key=lambda e: qualified_name(snapshot.origin_id, e.identity.locator)):
             key = qualified_name(snapshot.origin_id, entry.identity.locator)
