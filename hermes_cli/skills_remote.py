@@ -20,9 +20,13 @@ def remote_skill_rows() -> list[dict]:
 
     Includes the switched-off ones: both surfaces that call this are places where a
     disabled skill has to be visible, or it could never be switched back on.
+
+    Answered from the catalog already held — the screen this feeds has to render without
+    waiting on a server. A listing the user reads as *current* wants
+    :func:`verified_remote_skill_rows` instead.
     """
     try:
-        from tools.skills_tool_mcp import known_server_labels, list_rows
+        from tools.skills_tool_mcp import _connect_servers, known_server_labels, list_rows
     except ImportError:  # `mcp` is an optional extra; the CLI works without it
         return []
     try:
@@ -37,13 +41,31 @@ def remote_skill_rows() -> list[dict]:
         return []
 
 
-def _connect_servers(servers: list[str]) -> None:
-    """Connect just *servers*, without letting OAuth read from this command's stdin."""
-    try:
-        from tools.mcp_oauth import suppress_interactive_oauth
-    except ImportError:
-        from contextlib import nullcontext as suppress_interactive_oauth
-    from tools.mcp_tool_discovery import discover_mcp_tools
+def verified_remote_skill_rows() -> tuple[list[dict], list[dict]]:
+    """Rows for a listing the user asked for now, plus one problem per unreadable server.
 
-    with suppress_interactive_oauth():
-        discover_mcp_tools(allowed_mcp_names=servers)
+    The counterpart of :func:`remote_skill_rows`, for the surfaces where a person reads the
+    result as today's answer: the servers are re-read first, and one that cannot be read
+    contributes a problem instead of its cached rows. Those rows would advertise skills this
+    host may no longer be able to load — the failure this distinction exists to remove.
+    """
+    try:
+        from tools.skills_tool_mcp import known_server_labels, list_rows, refresh_catalogs
+    except ImportError:  # `mcp` is an optional extra; the CLI works without it
+        return [], []
+    try:
+        servers = sorted(known_server_labels())
+    except Exception:
+        logger.warning("MCP server labels unavailable", exc_info=True)
+        return [], []
+    if not servers:
+        return [], []
+    try:
+        verified, problems = refresh_catalogs()
+        answering = set(verified)
+        rows = [dict(row, remote=True) for row in list_rows(skip_disabled=True)
+                if row.get("server") in answering]
+        return rows, problems
+    except Exception:
+        logger.warning("Remote skills could not be listed", exc_info=True)
+        return [], [{"server": name, "error": "the remote listing failed"} for name in servers]

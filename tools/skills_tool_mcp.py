@@ -14,8 +14,10 @@ retires the catalog rather than being shown with a warning.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 from typing import TYPE_CHECKING
@@ -386,6 +388,120 @@ def list_rows(scope_id: Optional[str] = None, *, skip_disabled: bool = False) ->
             "source": _source(entry),
         })
     return rows
+
+
+def _connect_servers(servers: list[str]) -> None:
+    """Bring just *servers* up through the normal connect path, without this call reading stdin.
+
+    The same route every other connect takes: cooldown, OAuth suppressions and the parked
+    self-probe all stay in the discovery layer instead of being re-implemented here. For a
+    server that is merely torn down it only signals the rebuild and returns.
+    """
+    try:
+        from tools.mcp_oauth import suppress_interactive_oauth
+    except ImportError:
+        from contextlib import nullcontext as suppress_interactive_oauth
+    from tools.mcp_tool_discovery import discover_mcp_tools
+
+    with suppress_interactive_oauth():
+        discover_mcp_tools(allowed_mcp_names=servers)
+
+
+EXPLICIT_REFRESH_TIMEOUT_SECONDS = 15.0
+# A nudge (``_connect_servers``) only *signals* a torn-down transport to rebuild; the session
+# appears a moment later, so a listing waits this long for it before calling the server gone.
+_SESSION_WAIT_SECONDS = 5.0
+# The loop bridge polls in 100ms slices on its own deadline; a hair of headroom lets the
+# pass finish and report per-server rather than being cut off mid-classification.
+_BRIDGE_MARGIN_SECONDS = 2.0
+
+
+def refresh_catalogs(*, timeout: float = EXPLICIT_REFRESH_TIMEOUT_SECONDS,
+                     manager: Optional[SkillsOverMcpManager] = None,
+                     scope_id: Optional[str] = None) -> tuple[list[str], list[dict[str, str]]]:
+    """Re-read every opted-in server's catalog now, for a listing the user asked for.
+
+    Returns ``(verified server labels, problems)``. A caller shows a server's rows only when
+    it is listed as verified: this runs where someone asked for the *current* list, and the
+    snapshot already held routes and loads against a connection that may be gone. A server
+    that answers with an empty catalog is verified — "nothing published" is an answer.
+
+    Bounded end to end: the reconnect nudge, the wait for it to land and the re-list share
+    one deadline, so an unreachable server costs the caller time, never an unbounded wait.
+    A problem here means "not readable now", never proof the transport is gone — nothing is
+    marked disconnected and the next call tries again.
+    """
+    servers = sorted(known_server_labels())
+    if not servers:
+        return [], []
+    manager = manager or _manager()
+    scope = _scope_id() if scope_id is None else scope_id
+    missing = [name for name in servers if not manager.has_session(name, scope)]
+    if missing:
+        _connect_servers(missing)
+    try:
+        from tools.mcp_tool_loop import _run_on_mcp_loop
+        return _run_on_mcp_loop(lambda: _refresh_on_loop(manager, scope, servers, timeout),
+                                timeout=timeout + _BRIDGE_MARGIN_SECONDS)
+    except TimeoutError:
+        return [], [_unreadable(name, "the servers did not answer in time") for name in servers]
+    except InterruptedError:
+        return [], [_unreadable(name, "the listing was interrupted") for name in servers]
+    except RuntimeError as exc:  # no MCP loop: nothing was ever connected in this process
+        logger.debug("Skills catalog refresh unavailable: %s", exc)
+        return [], [_unreadable(name, "the MCP client is not available") for name in servers]
+
+
+async def _refresh_on_loop(manager: SkillsOverMcpManager, scope: str, servers: list[str],
+                           timeout: float) -> tuple[list[str], list[dict[str, str]]]:
+    """Re-list inside the MCP loop: wait briefly for a signaled reconnect, then read in parallel."""
+    deadline = time.monotonic() + timeout
+    wait_until = min(time.monotonic() + _SESSION_WAIT_SECONDS, deadline)
+    while time.monotonic() < wait_until and not all(manager.has_session(n, scope) for n in servers):
+        await asyncio.sleep(0.05)
+    ready = [name for name in servers if manager.has_session(name, scope)]
+    problems = [_unreadable(name, "no live connection") for name in servers if name not in ready]
+    tasks = {name: asyncio.ensure_future(manager.discover(name, scope, reason="explicit-list"))
+             for name in ready}
+    if tasks:
+        await asyncio.wait(set(tasks.values()), timeout=max(0.0, deadline - time.monotonic()))
+    verified: list[str] = []
+    for name, task in tasks.items():
+        if not task.done():
+            # Past the deadline the read keeps running — the catalog it lands is still the
+            # right one — but this listing may not claim it answered.
+            task.add_done_callback(_log_late_refresh)
+            problems.append(_unreadable(name, "the catalog did not answer in time"))
+            continue
+        failure = task.exception()
+        if failure is None or _is_no_catalog_here(failure):
+            # A server that answers "I serve no skills extension" has told us its current
+            # list: nothing. That is a verified answer, not an unreadable one.
+            verified.append(name)
+        else:
+            problems.append(_unreadable(name, _failure_text(failure)))
+    return verified, problems
+
+
+def _is_no_catalog_here(exc: BaseException) -> bool:
+    return isinstance(exc, SkillError) and exc.code is SkillErrorCode.UNSUPPORTED_EXTENSION
+
+
+def _failure_text(exc: BaseException) -> str:
+    return getattr(exc, "message", None) or f"{type(exc).__name__}: {exc}"
+
+
+def _unreadable(server: str, reason: str) -> dict[str, str]:
+    return {"server": server, "error": reason}
+
+
+def _log_late_refresh(task: asyncio.Task[Any]) -> None:
+    """Consume a read that outlived its listing so its failure is never 'never retrieved'."""
+    if task.cancelled():
+        return
+    failure = task.exception()
+    if failure is not None:
+        logger.debug("Skills catalog refresh finished after its listing: %s", failure)
 
 
 def _disabled_names() -> set[str]:

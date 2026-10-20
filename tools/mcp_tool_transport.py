@@ -255,6 +255,8 @@ class MCPServerTransportMixin:
         if mark_lifecycle:
             self._mark_lifecycle_started()
         await self._discover_tools()
+        from tools.mcp_skills_lifecycle import publish_transport_catalogs, retire_transport_catalogs
+        await publish_transport_catalogs(self)
         self._ready.set()
         self._ever_connected = True
         _core._reset_server_error(self.name)
@@ -274,10 +276,13 @@ class MCPServerTransportMixin:
         # recovery isn't gated on a stale consecutive-failure count (#16788).
         # Unproven until keepalive/tool-call success (#62212).
         self._session_proven = False
-        reason = await self._wait_for_lifecycle_event()
-        if label and reason == "reconnect":
-            logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
-        return reason
+        try:
+            reason = await self._wait_for_lifecycle_event()
+            if label and reason == "reconnect":
+                logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
+            return reason
+        finally:
+            retire_transport_catalogs(self)
 
     async def _serve_transport(self, transport_cm, label: str, connect_timeout: float) -> str:
         """Open *transport_cm*, wrap its streams in a ClientSession and serve it. Streams are indexed,
