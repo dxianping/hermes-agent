@@ -1445,7 +1445,7 @@ def _build_skills_system_prompt_inner(
                 listed.add(name)
                 skills_by_category.setdefault("plugin", []).append((name, desc))
     if mcp_rows:
-        # Qualified `server:skill` keys, so a remote row can never shadow a local load_name;
+        # Qualified `server::skill` keys, so a remote row can never shadow a local load_name;
         # a same-named plugin still wins the row (it is the older, user-installed claim).
         listed = {name for entries in skills_by_category.values() for name, _ in entries}
         for category, name, desc in mcp_rows:
