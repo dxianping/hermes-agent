@@ -5,21 +5,41 @@ description. Frontmatter, manifests and file lists stay in the registry — they
 the host's evidence for validating a read later, not content the model should be
 reasoning about, and injecting them would spend the context window on facts that
 change the routing decision not at all.
+
+A description is third-party text landing inside a prompt block the harness opened,
+so everything a server publishes passes two checks before it is rendered:
+
+* **Scanned.** The same ``context``-scope patterns that gate SOUL.md/AGENTS.md
+  (``agent.prompt_builder._scan_context_content``) run over the text that will
+  actually appear, and a hit drops the description rather than the row: the skill
+  stays routable by name, and the payload never reaches the system prompt.
+* **Neutralized.** Wrapper tokens are defanged even when nothing matched. A
+  description shaped ``</available_skills> … <available_skills>`` closes the real
+  block early with no injection keyword at all, so the keyword scan cannot see it —
+  the prompt is plain text to the model, and only the literal token has to match
+  (#8884, arXiv 2609.01222 vector B-1). Same shape main uses for tool results
+  (``agent/tool_dispatch_helpers.py::_neutralize_delimiters``).
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-# Remote descriptions are third-party text on a per-row budget in a system-prompt
-# block that must stay byte-stable for the life of a conversation.
-MAX_REMOTE_DESCRIPTION = 300
-_TRUNCATION_SUFFIX = "…"
 MAIN_FILE_NAME = "SKILL.md"
+
+# Wrapper tokens the prompt treats as its own structure. A description that contains one
+# can close or reopen a block the builder owns, so it is defanged before rendering.
+# Case-insensitive so a differently-cased spelling cannot slip past (#56172's rule for
+# ``untrusted_tool_result``). Hyphens and underscores both count as separators.
+_WRAPPER_TOKEN_RE = re.compile(
+    r"available_skills|memory[-_]context|untrusted_tool_result|missing_context|skill_pruned",
+    re.IGNORECASE,
+)
 
 
 def locator_of(uri: str) -> str:
@@ -134,12 +154,38 @@ def mcp_skill_rows(disabled: set[str], available_tools: Optional[set[str]],
             except Exception:
                 logger.debug("Skipping remote skill %s: frontmatter gating failed", key, exc_info=True)
                 continue
-            rows.append((f"mcp/{snapshot.origin_id}", key, _trim(entry.description)))
+            rows.append((f"mcp/{snapshot.origin_id}", key,
+                         index_description(entry.description, key=key)))
     return rows, tuple(token)
 
 
-def _trim(description: str) -> str:
-    text = " ".join(str(description).split())
-    if len(text) <= MAX_REMOTE_DESCRIPTION:
-        return text
-    return text[: MAX_REMOTE_DESCRIPTION - 1] + _TRUNCATION_SUFFIX
+def index_description(description: Any, *, key: str = "") -> str:
+    """*description* as the index may render it: fitted to the shared prompt budget, scanned,
+    and with wrapper tokens defanged. ``""`` when the text is unfit for the prompt at all.
+
+    Order matters. Clipping first means the scan judges the text the model would actually
+    see — a hostile tail past the budget never reaches it, so a legitimate routing
+    description is not thrown away for characters that would have been cut.
+    """
+    from agent.skill_utils import clip_skill_description
+    from tools.threat_patterns import scan_for_threats
+
+    text = clip_skill_description(" ".join(str(description).split()))
+    if not text:
+        return ""
+    findings = scan_for_threats(text, scope="context")
+    if findings:
+        logger.warning("MCP skill %s: description withheld from the skills index (%s)",
+                       key or "<unnamed>", ", ".join(findings))
+        return ""
+    return _neutralize_wrapper_tokens(text)
+
+
+def _neutralize_wrapper_tokens(text: str) -> str:
+    """Swap a wrapper token's separator so it stays readable but no longer matches the
+    token the builder opened its block with."""
+    def _defang(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return token.replace("_", "-") if "_" in token else token.replace("-", "_")
+
+    return _WRAPPER_TOKEN_RE.sub(_defang, text)

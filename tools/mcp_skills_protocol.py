@@ -203,6 +203,12 @@ def split_skill_uri(uri: str) -> tuple[str, str, tuple[str, ...]]:
     Segments are validated here, not by the caller: ``..``/``.``/empty components
     and percent-encoded traversal all make a URI unusable for containment checks,
     and a URI we cannot reason about must never reach the manifest trust path.
+
+    Angle brackets and control characters are refused for a different reason: the URI's
+    path becomes the qualified load key the skills index prints into
+    ``<available_skills>``, so a segment carrying ``</available_skills>`` would close the
+    block early and land the rest outside it (#8884). Refusing it here keeps one hostile
+    spelling out of the key the projector otherwise only has to neutralize.
     """
     if not isinstance(uri, str) or not uri:
         raise SkillError(SkillErrorCode.PROTOCOL_INVALID, "skill resource URI must be a non-empty string")
@@ -218,6 +224,10 @@ def split_skill_uri(uri: str) -> tuple[str, str, tuple[str, ...]]:
         if decoded in (".", "..") or "/" in decoded or "\\" in decoded or "\x00" in decoded:
             raise SkillError(SkillErrorCode.PROTOCOL_INVALID,
                              f"skill resource URI has a traversal segment: {uri!r}")
+        if any(ch in decoded for ch in "<>") or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in decoded):
+            raise SkillError(SkillErrorCode.PROTOCOL_INVALID,
+                             f"skill resource URI has a segment that cannot be printed into the "
+                             f"skills index: {uri!r}")
     return parts.scheme, parts.netloc, tuple(raw_segments)
 
 
