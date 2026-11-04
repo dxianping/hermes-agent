@@ -7,6 +7,7 @@ unless a skill that exists somewhere was actually asked for.
 """
 
 import json
+import sys
 
 import pytest
 
@@ -17,6 +18,11 @@ from tools.mcp_skills_manager import SkillsOverMcpManager, get_manager, set_mana
 SERVER = "acme"
 SERVER_B = "other"
 SCOPE = ""
+
+# The gate under test must refuse a platform this host is not. Derive that platform
+# from the running interpreter instead of assuming the CI host is Windows: the
+# original fixture hardcoded "linux", which matched on Linux and turned both tests red.
+_MISMATCHED_PLATFORM = "windows" if sys.platform != "win32" else "linux"
 
 # One conversation id per test: the repeat-view dedup is keyed by (task, server, uri,
 # revision) process-wide, and two tests loading identical fake content under one id
@@ -264,13 +270,13 @@ def test_a_repeat_view_of_the_same_revision_is_deduped(remote):
 
 def test_a_platform_mismatched_remote_skill_is_refused_on_load(remote):
     server, manager = remote
-    server.skills.append(FakeSkill(uri="skill://team/linuxonly/SKILL.md", name="linuxonly",
-                                   files={"SKILL.md": "---\nname: linuxonly\n---\nx\n"},
-                                   frontmatter_extra={"platforms": ["linux"]}))
+    server.skills.append(FakeSkill(uri="skill://team/otheros/SKILL.md", name="otheros",
+                                   files={"SKILL.md": "---\nname: otheros\n---\nx\n"},
+                                   frontmatter_extra={"platforms": [_MISMATCHED_PLATFORM]}))
     import asyncio
     asyncio.run(manager.discover(SERVER, SCOPE, reason="test"))
 
-    result = _view(name=f"{SERVER}::team/linuxonly")
+    result = _view(name=f"{SERVER}::team/otheros")
     assert result["success"] is False
     assert result["readiness_status"] == "unsupported"
 
@@ -298,14 +304,14 @@ def test_the_index_projects_remote_skills_under_a_qualified_key(remote):
 
 def test_the_index_hides_platform_mismatched_remote_skills(remote):
     server, manager = remote
-    server.skills.append(FakeSkill(uri="skill://team/linuxonly/SKILL.md", name="linuxonly",
-                                   files={"SKILL.md": "---\nname: linuxonly\n---\nx\n"},
-                                   frontmatter_extra={"platforms": ["linux"]}))
+    server.skills.append(FakeSkill(uri="skill://team/otheros/SKILL.md", name="otheros",
+                                   files={"SKILL.md": "---\nname: otheros\n---\nx\n"},
+                                   frontmatter_extra={"platforms": [_MISMATCHED_PLATFORM]}))
     import asyncio
     asyncio.run(manager.discover(SERVER, SCOPE, reason="test"))
     from agent.skills_prompt_mcp import mcp_skill_rows
     rows, _token = mcp_skill_rows(set(), None, None, None)
-    assert f"{SERVER}::team/linuxonly" not in {r[1] for r in rows}, "the offer gate withholds it"
+    assert f"{SERVER}::team/otheros" not in {r[1] for r in rows}, "the offer gate withholds it"
 
 
 def test_a_disabled_remote_skill_is_not_projected(remote):
